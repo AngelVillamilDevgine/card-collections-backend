@@ -11,7 +11,7 @@
     "start": "node src/servidor.js",
     "dev": "node --watch src/servidor.js",
     "importar": "node bin/importar.js",
-    "test": "node --test"
+    "test": "node --test --test-concurrency=1"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

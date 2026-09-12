@@ -15,15 +15,24 @@ services:
     image: ${DBZ_IMAGEN}
     networks: [proxy]
 
+    # Publicado porque quien le habla es una Function de Cloudflare Pages, que no puede
+    # llegar por Traefik: eso necesitaría un dominio propio, que hoy no hay. El puerto
+    # queda abierto al mundo y lo único que lo cuida es la cabecera secreta.
+    ports:
+      - "8790:8787"
+
     environment:
       # La URL con la contraseña entra por el secret, no por acá.
       DBZ_MYSQL_URL_FILE: /run/secrets/dbz_mysql_url
+      # Sin esta cabecera la API contesta 404 a todo: es lo que separa a la Function
+      # de cualquiera que escanee el puerto.
+      DBZ_SECRETO_PROXY_FILE: /run/secrets/dbz_secreto_proxy
       # Qué front tiene permiso de pedirle a esta API. Sin esto el navegador corta.
       DBZ_ORIGENES: ${DBZ_ORIGENES}
       DBZ_VERSION: ${DBZ_IMAGEN}
       PORT: "8787"
 
-    secrets: [dbz_mysql_url]
+    secrets: [dbz_mysql_url, dbz_secreto_proxy]
 
     # El MySQL no es un servicio del swarm: es un contenedor suelto con el 3306
     # publicado en el host. Desde acá se llega por la gateway de Docker, que es lo
@@ -70,4 +79,6 @@ networks:
 
 secrets:
   dbz_mysql_url:
+    external: true
+  dbz_secreto_proxy:
     external: true
