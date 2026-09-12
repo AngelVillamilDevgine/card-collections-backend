@@ -18,8 +18,12 @@ services:
     # Publicado porque quien le habla es una Function de Cloudflare Pages, que no puede
     # llegar por Traefik: eso necesitaría un dominio propio, que hoy no hay. El puerto
     # queda abierto al mundo y lo único que lo cuida es la cabecera secreta.
+    #
+    # 8081 y no cualquiera: Dattaweb filtra por lista blanca antes de que el paquete
+    # llegue al servidor. Pasan 80, 443, 3000, 3306, 4000, 7000, 8081 y el de SSH; el
+    # resto se descarta en el camino. De esos, 8081 era el único libre.
     ports:
-      - "8790:8787"
+      - "8081:8787"
 
     environment:
       # La URL con la contraseña entra por el secret, no por acá.
