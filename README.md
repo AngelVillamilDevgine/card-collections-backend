@@ -78,25 +78,18 @@ toca la base — un proceso vivo que no llega al MySQL no cuenta como sano.
 
 ### Preparar el servidor (una vez)
 
-1. **Base y usuario** en el MySQL que ya corre ahí:
-
-   ```sql
-   CREATE DATABASE dbz_cromeros CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   CREATE USER 'dbz'@'%' IDENTIFIED BY 'una-clave-larga';
-   GRANT ALL PRIVILEGES ON dbz_cromeros.* TO 'dbz'@'%';
-   ```
-
-   Sólo sobre `dbz_cromeros`: este usuario no tiene por qué ver las bases de los otros
-   proyectos.
-
-2. **El secret** con la URL. Va como secret y no como variable porque lleva la clave:
+1. **Base, usuario y secret**, todo de una:
 
    ```sh
-   printf 'mysql://dbz:una-clave-larga@host.docker.internal:3306/dbz_cromeros' \
-     | docker secret create dbz_mysql_url -
+   bash infra/preparar-base.sh
    ```
 
-3. **El stack**:
+   Pide la clave de root del MySQL por teclado y no la escribe en ningún lado. La del
+   usuario de la app la genera sola y la deja únicamente adentro del secret: no la tipea
+   nadie y no queda a la vista. El usuario tiene permisos sólo sobre `dbz_cromeros` — no
+   tiene por qué ver las bases de los otros proyectos.
+
+2. **El stack**:
 
    ```sh
    DBZ_DOMINIO=api.tudominio.com \
@@ -105,7 +98,7 @@ toca la base — un proceso vivo que no llega al MySQL no cuenta como sano.
      docker stack deploy -c infra/dbz-api.stack.yml --with-registry-auth dbz-api
    ```
 
-4. **La clave del deploy**, atada a un solo comando:
+3. **La clave del deploy**, atada a un solo comando:
 
    ```sh
    install -m 755 infra/dbz-deploy.sh /usr/local/bin/dbz-deploy.sh
