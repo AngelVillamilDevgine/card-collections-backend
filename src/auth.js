@@ -1,4 +1,5 @@
-// Registro, login y sesiones. Sin librerías: todo lo que hace falta está en node:crypto.
+// Registro, login y sesiones. Sin librerías de criptografía: todo lo que hace falta
+// está en node:crypto.
 //
 // La clave se guarda con scrypt (lento a propósito, para que probar claves una por una
 // no sea gratis). La sesión es un token opaco al azar, no un JWT: se puede revocar
@@ -34,26 +35,29 @@ export async function claveCoincide(clave, guardado) {
 export const hashDeToken = (token) =>
   crypto.createHash('sha256').update(token).digest('hex')
 
-export function crearSesion(base, usuarioId) {
+export async function crearSesion(pool, usuarioId) {
   const token = crypto.randomBytes(32).toString('base64url')
-  base.prepare(
-    `INSERT INTO sesion (hash, usuario_id, vence)
-     VALUES (?, ?, datetime('now', ?))`
-  ).run(hashDeToken(token), usuarioId, `+${DIAS} days`)
+  await pool.query(
+    'INSERT INTO sesion (hash, usuario_id, vence) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? DAY))',
+    [hashDeToken(token), usuarioId, DIAS]
+  )
   return token
 }
 
-export function cerrarSesion(base, token) {
-  return base.prepare('DELETE FROM sesion WHERE hash = ?').run(hashDeToken(token)).changes
+export async function cerrarSesion(pool, token) {
+  const [r] = await pool.query('DELETE FROM sesion WHERE hash = ?', [hashDeToken(token)])
+  return r.affectedRows
 }
 
-export function usuarioDeToken(base, token) {
+export async function usuarioDeToken(pool, token) {
   if (!token) return null
-  return base.prepare(
+  const [filas] = await pool.query(
     `SELECT u.id, u.usuario
        FROM sesion s JOIN usuario u ON u.id = s.usuario_id
-      WHERE s.hash = ? AND s.vence > datetime('now')`
-  ).get(hashDeToken(token)) ?? null
+      WHERE s.hash = ? AND s.vence > NOW()`,
+    [hashDeToken(token)]
+  )
+  return filas[0] ?? null
 }
 
 /* Qué se acepta como nombre y como clave. Los mensajes van al usuario, en castellano. */

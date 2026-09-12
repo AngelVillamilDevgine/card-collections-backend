@@ -1,0 +1,73 @@
+# La API como un servicio más del swarm, igual que el resto de lo que corre acá.
+#
+# Primer despliegue:
+#   printf 'mysql://usuario:clave@host.docker.internal:3306/dbz_cromeros' \
+#     | docker secret create dbz_mysql_url -
+#   DBZ_DOMINIO=api.tudominio.com DBZ_IMAGEN=devgine/dbz-cromeros-api:sha \
+#   DBZ_ORIGENES=https://cartas.tudominio.com \
+#     docker stack deploy -c dbz-api.stack.yml --with-registry-auth dbz-api
+#
+# Después de eso el CI sólo cambia la imagen; el stack no se vuelve a tocar.
+version: "3.8"
+
+services:
+  api:
+    image: ${DBZ_IMAGEN}
+    networks: [proxy]
+
+    environment:
+      # La URL con la contraseña entra por el secret, no por acá.
+      DBZ_MYSQL_URL_FILE: /run/secrets/dbz_mysql_url
+      # Qué front tiene permiso de pedirle a esta API. Sin esto el navegador corta.
+      DBZ_ORIGENES: ${DBZ_ORIGENES}
+      DBZ_VERSION: ${DBZ_IMAGEN}
+      PORT: "8787"
+
+    secrets: [dbz_mysql_url]
+
+    # El MySQL no es un servicio del swarm: es un contenedor suelto con el 3306
+    # publicado en el host. Desde acá se llega por la gateway de Docker, que es lo
+    # que resuelve host-gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    deploy:
+      replicas: 1
+
+      # En swarm mode Traefik lee las etiquetas del SERVICIO, no las del contenedor:
+      # por eso van acá adentro de deploy y no al nivel de arriba.
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.routers.dbz-api.rule=Host(`${DBZ_DOMINIO}`)"
+        - "traefik.http.routers.dbz-api.entrypoints=websecure"
+        - "traefik.http.routers.dbz-api.tls.certresolver=le"
+        - "traefik.http.services.dbz-api.loadbalancer.server.port=8787"
+
+      update_config:
+        # start-first: la nueva levanta y recién cuando está sana entra la anterior a
+        # apagarse. Sin esto hay un hueco de unos segundos sin API.
+        order: start-first
+        failure_action: rollback
+        delay: 10s
+        monitor: 30s
+      rollback_config:
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+      resources:
+        limits:
+          # El servidor tiene 2 CPUs y 5.8 GB compartidos con el resto: esto no se
+          # puede comer la máquina si algo se descontrola.
+          cpus: "0.50"
+          memory: 256M
+
+networks:
+  proxy:
+    external: true
+
+secrets:
+  dbz_mysql_url:
+    external: true

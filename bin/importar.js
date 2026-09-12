@@ -4,10 +4,9 @@
 //   node bin/importar.js angel ../datos/coleccion.json
 //
 // Sirve para lo que ya tenías cargado antes de que esto fuera un servidor, y para
-// recuperar un respaldo a mano. Entiende las formas viejas del archivo, igual que
-// las entendía normalizar() en el front.
+// recuperar un respaldo a mano. Entiende las formas viejas del archivo.
 import fs from 'node:fs'
-import { abrir } from '../src/base.js'
+import { conectar, prepararEsquema } from '../src/base.js'
 import { reemplazar, leer } from '../src/coleccion.js'
 
 const [usuario, ruta] = process.argv.slice(2)
@@ -27,25 +26,28 @@ function normalizar(datos) {
   return { estados, cantidades }
 }
 
-const base = abrir()
-const fila = base.prepare('SELECT id FROM usuario WHERE usuario = ?').get(usuario)
-if (!fila) {
+const pool = conectar()
+await prepararEsquema(pool)
+
+const [filas] = await pool.query('SELECT id FROM usuario WHERE usuario = ?', [usuario])
+if (!filas.length) {
   console.error(`No existe el usuario "${usuario}". Registralo primero desde la app.`)
+  await pool.end()
   process.exit(1)
 }
 
-const antes = Object.keys(leer(base, fila.id).cantidades).length
-if (antes) {
+const id = filas[0].id
+const antes = Object.keys((await leer(pool, id)).cantidades).length
+if (antes && process.env.DBZ_PISAR !== '1') {
   console.error(`Ojo: "${usuario}" ya tiene ${antes} cartas y esto las reemplaza.`)
-  if (process.env.DBZ_PISAR !== '1') {
-    console.error('Si es lo que querés, corrélo de nuevo con DBZ_PISAR=1.')
-    process.exit(1)
-  }
+  console.error('Si es lo que querés, corrélo de nuevo con DBZ_PISAR=1.')
+  await pool.end()
+  process.exit(1)
 }
 
 const datos = normalizar(JSON.parse(fs.readFileSync(ruta, 'utf8')))
-const cartas = reemplazar(base, fila.id, datos)
+const cartas = await reemplazar(pool, id, datos)
 const sobrantes = Object.values(datos.cantidades).reduce((a, n) => a + (n - 1), 0)
 
 console.log(`Listo: ${cartas} cartas para "${usuario}" (${sobrantes} repetidas).`)
-base.close()
+await pool.end()

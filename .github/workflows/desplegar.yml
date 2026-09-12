@@ -5,15 +5,31 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Dos deploys a la vez se pisarían el symlink. El segundo espera al primero.
+# Dos deploys a la vez se pisarían. El segundo espera al primero.
 concurrency:
   group: deploy-api
   cancel-in-progress: false
+
+env:
+  IMAGEN: devgine/dbz-cromeros-api
 
 jobs:
   probar:
     name: Tests
     runs-on: ubuntu-latest
+
+    # Un MySQL de verdad: la mitad de lo que hay que probar es el SQL.
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: prueba
+          MYSQL_DATABASE: dbz_prueba
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -uroot -pprueba"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,43 +40,53 @@ jobs:
       - run: npm test
         env:
           DBZ_LOG: silent
+          DBZ_MYSQL_URL_TEST: mysql://root:prueba@127.0.0.1:3307/dbz_prueba
+
+  imagen:
+    name: Construir y publicar la imagen
+    needs: probar          # si los tests fallan, no se publica nada
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USUARIO }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGEN }}:${{ github.sha }}
+          # La caché entre corridas ahorra el npm ci cuando no cambian las dependencias.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   desplegar:
-    name: Desplegar
-    needs: probar          # si los tests fallan, al servidor no llega nada
+    name: Desplegar en el swarm
+    needs: imagen
     runs-on: ubuntu-latest
     environment: produccion
     steps:
-      - uses: actions/checkout@v4
-
       - name: Preparar la clave SSH
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           echo "${{ secrets.SSH_CLAVE }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # La huella del servidor se fija a mano: sin esto habría que aceptar
-          # cualquier host, y ahí un intermediario se lleva el deploy entero.
+          # La huella se fija a mano: sin esto habría que aceptar cualquier host,
+          # y ahí un intermediario se lleva el deploy.
           echo "${{ secrets.SSH_HUELLA }}" > ~/.ssh/known_hosts
 
-      - name: Subir el código
+      - name: Cambiar la imagen del servicio
         env:
           HOST: ${{ secrets.SSH_HOST }}
           PUERTO: ${{ secrets.SSH_PUERTO }}
           USUARIO: ${{ secrets.SSH_USUARIO }}
         run: |
-          rsync -az --delete \
-            --exclude '.git' --exclude 'node_modules' --exclude 'datos' \
-            -e "ssh -p $PUERTO -i ~/.ssh/id_ed25519" \
-            ./ "$USUARIO@$HOST:/opt/dbz-api/releases/${{ github.sha }}/"
-
-      - name: Instalar, activar y comprobar
-        env:
-          HOST: ${{ secrets.SSH_HOST }}
-          PUERTO: ${{ secrets.SSH_PUERTO }}
-          USUARIO: ${{ secrets.SSH_USUARIO }}
-        run: |
+          # La clave está atada a dbz-deploy.sh en el servidor: esto no abre una shell,
+          # sólo le pasa el nombre de la imagen al script, que valida y actualiza.
           ssh -p "$PUERTO" -i ~/.ssh/id_ed25519 "$USUARIO@$HOST" \
-            "DBZ_SHA=${{ github.sha }} bash /opt/dbz-api/activar.sh"
+            "${{ env.IMAGEN }}:${{ github.sha }}"
 
       - name: Contarlo
         if: always()
@@ -68,6 +94,6 @@ jobs:
           if [ "${{ job.status }}" = "success" ]; then
             echo "### Desplegado ✅" >> $GITHUB_STEP_SUMMARY
           else
-            echo "### Falló, volvió a la versión anterior ❌" >> $GITHUB_STEP_SUMMARY
+            echo "### Falló — el swarm vuelve solo a la anterior ❌" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "\`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ env.IMAGEN }}:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY

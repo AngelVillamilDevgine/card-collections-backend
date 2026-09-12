@@ -4,7 +4,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { abrir, borrarVencidas } from './base.js'
+import { conectar, prepararEsquema, borrarVencidas } from './base.js'
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
   usuarioDeToken, revisarCredenciales, tokenDe,
@@ -12,17 +12,18 @@ import {
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
-const DIRECCION = process.env.DBZ_DIRECCION ?? '127.0.0.1'
+// En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
+const DIRECCION = process.env.DBZ_DIRECCION ?? '0.0.0.0'
 
-// En producción el front vive en otro dominio (Cloudflare), así que hay que decir
-// cuáles pueden pedirle a esta API. Sin esto el navegador corta el pedido.
+// El front vive en otro dominio (Cloudflare), así que hay que decir cuáles pueden
+// pedirle a esta API. Sin esto el navegador corta el pedido.
 const ORIGENES = (process.env.DBZ_ORIGENES ?? 'http://localhost:5173')
   .split(',').map((o) => o.trim()).filter(Boolean)
 
-export function crearApp(base) {
+export function crearApp(pool) {
   const app = Fastify({
-    // Va detrás de un proxy (Caddy/nginx): sin esto, la IP de todos sería la del proxy
-    // y el freno de intentos de abajo sería uno solo para el mundo entero.
+    // Va detrás de Traefik: sin esto, la IP de todos sería la del proxy y el freno
+    // de intentos de abajo sería uno solo para el mundo entero.
     trustProxy: true,
     bodyLimit: 2 * 1024 * 1024,
     logger: { level: process.env.DBZ_LOG ?? 'info' },
@@ -47,17 +48,18 @@ export function crearApp(base) {
     return previo.n > TOPE
   }
   const perdonar = (ip) => intentos.delete(ip)
-  setInterval(() => {
+  const reloj = setInterval(() => {
     for (const [ip, v] of intentos) if (Date.now() - v.desde > VENTANA) intentos.delete(ip)
-  }, VENTANA).unref()
+  }, VENTANA)
+  reloj.unref()
+  app.addHook('onClose', () => clearInterval(reloj))
 
   /* --- Sesión ---------------------------------------------------------------- */
 
-  function conSesion(pedido, respuesta, seguir) {
-    const usuario = usuarioDeToken(base, tokenDe(pedido))
+  async function conSesion(pedido, respuesta) {
+    const usuario = await usuarioDeToken(pool, tokenDe(pedido))
     if (!usuario) return respuesta.code(401).send({ error: 'Tenés que entrar de nuevo.' })
     pedido.usuario = usuario
-    seguir()
   }
 
   app.post('/api/registro', async (pedido, respuesta) => {
@@ -65,14 +67,22 @@ export function crearApp(base) {
     const mal = revisarCredenciales(usuario, clave)
     if (mal) return respuesta.code(400).send({ error: mal })
 
-    const existe = base.prepare('SELECT 1 FROM usuario WHERE usuario = ?').get(usuario)
-    if (existe) return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
+    let id
+    try {
+      const [r] = await pool.query(
+        'INSERT INTO usuario (usuario, hash) VALUES (?, ?)',
+        [usuario, await hashearClave(clave)]
+      )
+      id = r.insertId
+    } catch (e) {
+      // Dos registros a la vez con el mismo nombre: el UNIQUE de la tabla es el que
+      // decide, no un SELECT previo que puede quedar viejo entre medio.
+      if (e.code === 'ER_DUP_ENTRY')
+        return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
+      throw e
+    }
 
-    const { lastInsertRowid: id } = base
-      .prepare('INSERT INTO usuario (usuario, hash) VALUES (?, ?)')
-      .run(usuario, await hashearClave(clave))
-
-    return { token: crearSesion(base, id), usuario }
+    return { token: await crearSesion(pool, id), usuario }
   })
 
   app.post('/api/sesion', async (pedido, respuesta) => {
@@ -80,9 +90,13 @@ export function crearApp(base) {
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
 
     const { usuario, clave } = pedido.body ?? {}
-    const fila = typeof usuario === 'string'
-      ? base.prepare('SELECT id, usuario, hash FROM usuario WHERE usuario = ?').get(usuario)
-      : null
+    let fila = null
+    if (typeof usuario === 'string') {
+      const [filas] = await pool.query(
+        'SELECT id, usuario, hash FROM usuario WHERE usuario = ?', [usuario]
+      )
+      fila = filas[0] ?? null
+    }
 
     // El mismo mensaje exista o no el usuario: si no, se puede averiguar quién está
     // registrado probando nombres.
@@ -91,11 +105,11 @@ export function crearApp(base) {
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
     perdonar(pedido.ip)
-    return { token: crearSesion(base, fila.id), usuario: fila.usuario }
+    return { token: await crearSesion(pool, fila.id), usuario: fila.usuario }
   })
 
   app.delete('/api/sesion', { preHandler: conSesion }, async (pedido) => {
-    cerrarSesion(base, tokenDe(pedido))
+    await cerrarSesion(pool, tokenDe(pedido))
     return { chau: true }
   })
 
@@ -106,7 +120,7 @@ export function crearApp(base) {
   /* --- Colección ------------------------------------------------------------- */
 
   app.get('/api/coleccion', { preHandler: conSesion }, async (pedido) =>
-    leer(base, pedido.usuario.id))
+    leer(pool, pedido.usuario.id))
 
   // El camino caliente: un toque en una carta manda sólo esa carta.
   app.put('/api/cartas/:clave', { preHandler: conSesion }, async (pedido, respuesta) => {
@@ -116,7 +130,7 @@ export function crearApp(base) {
     const mal = revisarCarta(pedido.body)
     if (mal) return respuesta.code(400).send({ error: mal })
 
-    guardarCarta(base, pedido.usuario.id, clave, pedido.body.cantidad, pedido.body.estado)
+    await guardarCarta(pool, pedido.usuario.id, clave, pedido.body.cantidad, pedido.body.estado)
     return respuesta.code(204).send()
   })
 
@@ -130,12 +144,17 @@ export function crearApp(base) {
       if (!claveValida(clave))
         return respuesta.code(400).send({ error: `Clave inválida: ${clave}` })
     }
-    return { cartas: reemplazar(base, pedido.usuario.id, { estados, cantidades }) }
+    return { cartas: await reemplazar(pool, pedido.usuario.id, { estados, cantidades }) }
   })
 
-  /* --- Para el deploy: si esto no contesta, la versión nueva no sirve. --------- */
-  app.get('/api/salud', async () => {
-    base.prepare('SELECT 1').get()
+  /* --- Para el deploy: si esto no contesta, la versión nueva no sirve. ---------
+     Toca la base a propósito: un proceso vivo que no llega al MySQL no sirve. */
+  app.get('/api/salud', async (pedido, respuesta) => {
+    try {
+      await pool.query('SELECT 1')
+    } catch {
+      return respuesta.code(503).send({ bien: false, error: 'sin base' })
+    }
     return { bien: true, version: process.env.DBZ_VERSION ?? 'dev' }
   })
 
@@ -144,17 +163,24 @@ export function crearApp(base) {
 
 /* Sólo arranca si lo corrés directo, no si lo importa un test. */
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const base = abrir()
-  borrarVencidas(base)
-  setInterval(() => borrarVencidas(base), 24 * 60 * 60 * 1000).unref()
+  const pool = conectar()
+  await prepararEsquema(pool)
+  await borrarVencidas(pool)
+  const limpieza = setInterval(() => borrarVencidas(pool).catch(() => {}), 24 * 60 * 60 * 1000)
+  limpieza.unref()
 
-  const app = crearApp(base)
+  const app = crearApp(pool)
   app.listen({ port: PUERTO, host: DIRECCION })
     .then(() => app.log.info(`origenes permitidos: ${ORIGENES.join(', ')}`))
     .catch((e) => { app.log.error(e); process.exit(1) })
 
-  // systemd manda SIGTERM al reiniciar: cerrar prolijo evita dejar el WAL a medias.
+  // Docker manda SIGTERM al reemplazar el contenedor: cerrar prolijo evita cortar
+  // un guardado a la mitad.
   for (const senal of ['SIGTERM', 'SIGINT']) {
-    process.on(senal, () => app.close().then(() => { base.close(); process.exit(0) }))
+    process.on(senal, async () => {
+      await app.close()
+      await pool.end()
+      process.exit(0)
+    })
   }
 }
