@@ -62,6 +62,37 @@ node bin/importar.js angel ../datos/coleccion.json
 Entiende las formas viejas del archivo. Si el usuario ya tiene cartas avisa y no hace
 nada; para pisarlas, `DBZ_PISAR=1`.
 
+## Cómo llega un pedido
+
+No hay dominio para la API: no hay acceso al DNS de `devgine.com.ar`. Así que el camino
+es este:
+
+```
+navegador  ──HTTPS──>  card-collections-frontend.pages.dev
+                              │
+                              │  Function de Pages (functions/api/[[ruta]].js)
+                              │  agrega X-Dbz-Proxy y X-Forwarded-For
+                              ▼
+                       149.50.131.169:8790   ──HTTP, SIN CIFRAR──
+                              │
+                              ▼
+                       la API  ──>  MySQL del servidor
+```
+
+El front pide `/api` sobre su propio origen, así que la Function intercepta justo esas
+llamadas y **no hay CORS**: para el navegador es el mismo sitio.
+
+**El tramo Cloudflare → VPS va sin cifrar.** Fue una decisión tomada a sabiendas, entre
+colgarse del dominio de un cliente, comprar un dominio propio, o esto. La cabecera
+secreta *autentica* a la Function contra la API — sin ella se contesta 404 a todo — pero
+**no cifra nada**: quien esté en el camino ve lo que pasa, claves de login incluidas.
+
+Por eso: **la clave de esta app tiene que ser única.** Ninguna que se repita en otro lado.
+
+Se arregla el día que haya un dominio: se le crea un registro A, Traefik le saca el
+certificado solo (el router ya está puesto en el stack, esperando), se saca el `ports:`
+y la Function pasa a hablarle por HTTPS — o desaparece y el front le pega directo.
+
 ## Despliegue
 
 El VPS es **producción de Devgine con proyectos de clientes andando**. Todo lo de acá es
