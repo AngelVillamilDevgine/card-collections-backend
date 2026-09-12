@@ -134,6 +134,26 @@ echo "  el servicio queda habilitado; arranca con el primer deploy"
 decir "proxy y HTTPS"
 if [ -z "$DOMINIO" ]; then
   aviso "sin DOMINIO no configuro el proxy. La API queda en 127.0.0.1:$PUERTO_API."
+elif ss -lntp 2>/dev/null | grep -qi traefik || docker ps 2>/dev/null | grep -qi traefik; then
+  # Este servidor ya tiene Traefik en 80/443 con otras cosas atrás. Traefik se
+  # configura solo, leyendo etiquetas de Docker o archivos: meterle otro proxy
+  # al lado sería pelearse por el puerto.
+  aviso "hay Traefik en la puerta: no toco nada."
+  aviso "Agregale un router para $DOMINIO que apunte a 127.0.0.1:$PUERTO_API."
+  aviso "Si usa el proveedor de archivos, algo así:"
+  cat <<EJEMPLO
+    http:
+      routers:
+        dbz-api:
+          rule: "Host(\`$DOMINIO\`)"
+          service: dbz-api
+          entryPoints: [websecure]
+          tls: { certResolver: le }
+      services:
+        dbz-api:
+          loadBalancer:
+            servers: [{ url: "http://127.0.0.1:$PUERTO_API" }]
+EJEMPLO
 elif command -v nginx > /dev/null && systemctl is-active --quiet nginx; then
   aviso "hay nginx andando: no lo toco. Agregale a mano un server para $DOMINIO con"
   aviso "  proxy_pass http://127.0.0.1:$PUERTO_API;"
