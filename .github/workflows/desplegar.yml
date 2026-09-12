@@ -21,7 +21,7 @@ jobs:
     # Un MySQL de verdad: la mitad de lo que hay que probar es el SQL.
     services:
       mysql:
-        image: mysql:8
+        image: mysql:9
         env:
           MYSQL_ROOT_PASSWORD: prueba
           MYSQL_DATABASE: dbz_prueba
