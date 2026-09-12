@@ -73,7 +73,9 @@ navegador  ──HTTPS──>  card-collections-frontend.pages.dev
                               │  Function de Pages (functions/api/[[ruta]].js)
                               │  agrega X-Dbz-Proxy y X-Forwarded-For
                               ▼
-              vps-4240326-x.dattaweb.com:8081  ──HTTP, SIN CIFRAR──
+        vps-4240326-x.dattaweb.com/cartas-api   ──HTTP, SIN CIFRAR──
+                              │   (puerto 80, nginx del servidor)
+                              │   location /cartas-api/ -> 127.0.0.1:8081
                               │
                               ▼
                        la API  ──>  MySQL del servidor
@@ -87,9 +89,23 @@ devuelve un 403 con "error code: 1003" que no dice nada. Por eso `DBZ_API_ORIGEN
 `vps-4240326-x.dattaweb.com`, el hostname que le da el proveedor, que resuelve al VPS. Si
 Dattaweb alguna vez lo cambia, esto se rompe y hay que actualizar la variable.
 
-**El puerto es 8081** y no uno cualquiera: Dattaweb filtra por lista blanca antes de que el
-paquete llegue al servidor. Pasan 80, 443, 3000, 3306, 4000, 7000 y 8081; de esos, el único
-libre era el 8081.
+**Por qué entra por el 80 y no por un puerto propio.** Hay dos listas de puertos que tienen
+que coincidir, y casi no se superponen:
+
+| | |
+|---|---|
+| Dattaweb deja entrar | 80, 443, 3000, 3306, 4000, 7000, 8081 |
+| Cloudflare deja salir | 80, 443, 8080, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096, 8443 |
+| En las dos | **sólo 80 y 443** |
+
+Se probaron los once puertos de Cloudflare levantando escuchas reales en el servidor:
+Dattaweb los filtra todos. Así que el pedido entra por el 80, donde está nginx, y un
+`location /cartas-api/` lo baja al 8081 donde escucha la API. El bloque está en
+`/etc/nginx/sites-available/vps-4240326-x`, con una copia de seguridad al lado.
+
+Es un `location` agregado a un archivo que ya existía: el `location /` quedó intacto, y se
+verificó con un A/B (configuración original vs. modificada) que el sitio que ya estaba ahí
+se comporta igual.
 
 **El tramo Cloudflare → VPS va sin cifrar.** Fue una decisión tomada a sabiendas, entre
 colgarse del dominio de un cliente, comprar un dominio propio, o esto. La cabecera
