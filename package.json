@@ -1,0 +1,19 @@
+{
+  "name": "dbz-cromeros-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "API de la colección Dragon Ball Z - Cromeros. Una colección por usuario.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/servidor.js",
+    "dev": "node --watch src/servidor.js",
+    "importar": "node bin/importar.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "better-sqlite3": "^11.7.0",
+    "fastify": "^5.2.0"
+  }
+}
