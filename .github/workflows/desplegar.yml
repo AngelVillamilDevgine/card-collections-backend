@@ -48,19 +48,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USUARIO }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ env.IMAGEN }}:${{ github.sha }}
-          # La caché entre corridas ahorra el npm ci cuando no cambian las dependencias.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+
+      # Sin esto, la falta de un secret se ve como un error de docker login que no
+      # dice qué falta. Mejor decirlo derecho.
+      - name: Revisar que estén los secrets
+        run: |
+          faltan=""
+          [ -n "${{ secrets.DOCKERHUB_USUARIO }}" ] || faltan="$faltan DOCKERHUB_USUARIO"
+          [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]   || faltan="$faltan DOCKERHUB_TOKEN"
+          if [ -n "$faltan" ]; then
+            echo "::error::Faltan estos secrets en el repo:$faltan"
+            echo "Se cargan en Settings > Secrets and variables > Actions." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      # Sin buildx ni caché de capas: el runner ya trae Docker, la imagen es chica y
+      # tarda menos de un minuto. buildx sólo agregaba una forma más de fallar.
+      - name: Entrar a Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USUARIO }}" --password-stdin
+
+      - name: Construir y publicar
+        run: |
+          docker build -t "$IMAGEN:${{ github.sha }}" .
+          docker push "$IMAGEN:${{ github.sha }}"
+
 
   desplegar:
     name: Desplegar en el swarm
@@ -68,6 +79,24 @@ jobs:
     runs-on: ubuntu-latest
     environment: produccion
     steps:
+      - name: Revisar que estén los secrets
+        run: |
+          faltan=""
+          for n in SSH_CLAVE SSH_HOST SSH_PUERTO SSH_USUARIO SSH_HUELLA; do
+            eval "v=\$$n"
+            [ -n "$v" ] || faltan="$faltan $n"
+          done
+          if [ -n "$faltan" ]; then
+            echo "::error::Faltan estos secrets en el repo:$faltan"
+            exit 1
+          fi
+        env:
+          SSH_CLAVE: ${{ secrets.SSH_CLAVE }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PUERTO: ${{ secrets.SSH_PUERTO }}
+          SSH_USUARIO: ${{ secrets.SSH_USUARIO }}
+          SSH_HUELLA: ${{ secrets.SSH_HUELLA }}
+
       - name: Preparar la clave SSH
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
