@@ -73,7 +73,7 @@ navegador  ──HTTPS──>  card-collections-frontend.pages.dev
                               │  Function de Pages (functions/api/[[ruta]].js)
                               │  agrega X-Dbz-Proxy y X-Forwarded-For
                               ▼
-                       149.50.131.169:8790   ──HTTP, SIN CIFRAR──
+              vps-4240326-x.dattaweb.com:8081  ──HTTP, SIN CIFRAR──
                               │
                               ▼
                        la API  ──>  MySQL del servidor
@@ -81,6 +81,15 @@ navegador  ──HTTPS──>  card-collections-frontend.pages.dev
 
 El front pide `/api` sobre su propio origen, así que la Function intercepta justo esas
 llamadas y **no hay CORS**: para el navegador es el mismo sitio.
+
+**Por el nombre y no por la IP.** Cloudflare Workers rechaza los `fetch` a una IP pelada:
+devuelve un 403 con "error code: 1003" que no dice nada. Por eso `DBZ_API_ORIGEN` apunta a
+`vps-4240326-x.dattaweb.com`, el hostname que le da el proveedor, que resuelve al VPS. Si
+Dattaweb alguna vez lo cambia, esto se rompe y hay que actualizar la variable.
+
+**El puerto es 8081** y no uno cualquiera: Dattaweb filtra por lista blanca antes de que el
+paquete llegue al servidor. Pasan 80, 443, 3000, 3306, 4000, 7000 y 8081; de esos, el único
+libre era el 8081.
 
 **El tramo Cloudflare → VPS va sin cifrar.** Fue una decisión tomada a sabiendas, entre
 colgarse del dominio de un cliente, comprar un dominio propio, o esto. La cabecera
