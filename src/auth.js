@@ -64,8 +64,11 @@ export async function usuarioDeToken(pool, token) {
 export function revisarCredenciales(usuario, clave) {
   if (typeof usuario !== 'string' || typeof clave !== 'string')
     return 'Faltan el usuario o la clave.'
-  if (!/^[a-zA-Z0-9._-]{3,32}$/.test(usuario))
-    return 'El usuario va de 3 a 32 caracteres, con letras, números, punto, guión o guión bajo.'
+  // Se aceptan @ y + porque mucha gente pone su mail de usuario. No se valida que
+  // sea un mail de verdad: acá es un nombre para entrar, no una dirección a la que
+  // se le mande nada.
+  if (!/^[a-zA-Z0-9._@+-]{3,64}$/.test(usuario))
+    return 'El usuario va de 3 a 64 caracteres: letras, números, punto, guión, guión bajo, arroba o más.'
   if (clave.length < LARGO_CLAVE)
     return `La clave necesita al menos ${LARGO_CLAVE} caracteres.`
   return null

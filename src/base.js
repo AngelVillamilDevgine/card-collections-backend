@@ -12,7 +12,7 @@ const COLACION = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_
 const TABLAS = [
   `CREATE TABLE IF NOT EXISTS usuario (
      id       INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-     usuario  VARCHAR(32)  NOT NULL,
+     usuario  VARCHAR(64)  NOT NULL,
      hash     VARCHAR(255) NOT NULL,
      creado   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
      UNIQUE KEY usuario_unico (usuario)
@@ -67,6 +67,20 @@ export function conectar(url = urlDeConexion()) {
 
 export async function prepararEsquema(pool) {
   for (const sql of TABLAS) await pool.query(sql)
+  await ensancharUsuario(pool)
+}
+
+/* La columna nació de 32 y un mail entra justo o no entra. CREATE TABLE IF NOT EXISTS
+   no toca una tabla que ya existe, así que hay que ensancharla a mano — sólo si hace
+   falta, para no reconstruir la tabla en cada arranque. */
+async function ensancharUsuario(pool) {
+  const [filas] = await pool.query(
+    `SELECT CHARACTER_MAXIMUM_LENGTH largo FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'usuario'`
+  )
+  if (filas[0] && filas[0].largo < 64) {
+    await pool.query('ALTER TABLE usuario MODIFY COLUMN usuario VARCHAR(64) NOT NULL')
+  }
 }
 
 /* Las sesiones vencidas no se borran solas. Se limpia al arrancar y una vez por día. */

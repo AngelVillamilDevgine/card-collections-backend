@@ -194,3 +194,27 @@ test('/api/salud contesta sin token, para el healthcheck del deploy', async () =
   assert.equal(r.statusCode, 200)
   assert.equal(r.json().bien, true)
 })
+
+test('un mail sirve de usuario, y uno largo entra en la columna', async () => {
+  const largo = 'angelvillamil1234@subdominio-bastante-largo.com.ar'
+  const r = await pedir({
+    method: 'POST', url: '/api/registro',
+    payload: { usuario: largo, clave: 'kamehameha' },
+  })
+  assert.equal(r.statusCode, 200, r.body)
+
+  const yo = await pedir({
+    method: 'GET', url: '/api/yo', headers: auth(r.json().token),
+  })
+  // Si la columna quedó corta, MySQL lo trunca y el usuario deja de poder entrar.
+  assert.equal(yo.json().usuario, largo)
+})
+
+test('sigue sin aceptar cualquier cosa de usuario', async () => {
+  for (const malo of ['ab', 'con espacio', 'barra/adentro', 'a'.repeat(65)]) {
+    const r = await pedir({
+      method: 'POST', url: '/api/registro', payload: { usuario: malo, clave: 'kamehameha' },
+    })
+    assert.equal(r.statusCode, 400, `"${malo.slice(0, 20)}" devolvió ${r.statusCode}`)
+  }
+})
