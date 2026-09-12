@@ -1,0 +1,34 @@
+[Unit]
+Description=API de la colección Dragon Ball Z (Cromeros)
+After=network.target
+
+[Service]
+Type=simple
+User=dbz
+Group=dbz
+WorkingDirectory=/opt/dbz-api/actual
+EnvironmentFile=/opt/dbz-api/.env
+ExecStart=/usr/bin/node src/servidor.js
+Restart=always
+RestartSec=3
+
+# Si se cae sola en loop, que no quede reiniciando para siempre sin que nadie se entere.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# La API no necesita nada del sistema salvo su propia carpeta de datos.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dbz-api/datos
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dbz-api
+
+[Install]
+WantedBy=multi-user.target

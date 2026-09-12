@@ -1,0 +1,5 @@
+# El servidor es Linux y acá se labura en Windows. Sin esto, los .sh viajan con CRLF
+# y bash los rechaza con un "bad interpreter" que no dice nada.
+* text=auto eol=lf
+*.sh text eol=lf
+*.service text eol=lf

@@ -1,0 +1,73 @@
+name: Probar y desplegar la API
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Dos deploys a la vez se pisarían el symlink. El segundo espera al primero.
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  probar:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+        env:
+          DBZ_LOG: silent
+
+  desplegar:
+    name: Desplegar
+    needs: probar          # si los tests fallan, al servidor no llega nada
+    runs-on: ubuntu-latest
+    environment: produccion
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar la clave SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_CLAVE }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # La huella del servidor se fija a mano: sin esto habría que aceptar
+          # cualquier host, y ahí un intermediario se lleva el deploy entero.
+          echo "${{ secrets.SSH_HUELLA }}" > ~/.ssh/known_hosts
+
+      - name: Subir el código
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          PUERTO: ${{ secrets.SSH_PUERTO }}
+          USUARIO: ${{ secrets.SSH_USUARIO }}
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude 'node_modules' --exclude 'datos' \
+            -e "ssh -p $PUERTO -i ~/.ssh/id_ed25519" \
+            ./ "$USUARIO@$HOST:/opt/dbz-api/releases/${{ github.sha }}/"
+
+      - name: Instalar, activar y comprobar
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          PUERTO: ${{ secrets.SSH_PUERTO }}
+          USUARIO: ${{ secrets.SSH_USUARIO }}
+        run: |
+          ssh -p "$PUERTO" -i ~/.ssh/id_ed25519 "$USUARIO@$HOST" \
+            "DBZ_SHA=${{ github.sha }} bash /opt/dbz-api/activar.sh"
+
+      - name: Contarlo
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### Desplegado ✅" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Falló, volvió a la versión anterior ❌" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "\`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
