@@ -1,0 +1,12 @@
+[Unit]
+Description=Mirar cada dos minutos si hay que desplegar la API de cartas
+
+[Timer]
+OnBootSec=2min
+# Se cuenta desde que arrancó la vuelta anterior. Si un deploy tarda más de dos minutos,
+# systemd no larga otra vuelta encima: espera a que termine.
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

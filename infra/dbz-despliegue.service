@@ -1,0 +1,13 @@
+[Unit]
+Description=Desplegar la API de cartas si hay un commit nuevo con los tests en verde
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dbz-despliegue.sh
+# git y docker buildx buscan su configuración en el HOME, y un servicio del sistema
+# arranca sin HOME definido.
+Environment=HOME=/root
+# Construir y esperar a que la versión nueva se ponga sana lleva unos minutos.
+TimeoutStartSec=15min

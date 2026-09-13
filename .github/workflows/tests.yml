@@ -1,0 +1,47 @@
+# Acá sólo se prueba. No se despliega nada desde GitHub.
+#
+# El despliegue lo hace el propio servidor: cada dos minutos mira el último commit de
+# main y, si el check "Tests" de ese commit terminó bien, baja el código, construye la
+# imagen y actualiza el servicio. Si falló, no lo toca. Ver infra/dbz-despliegue.sh.
+#
+# Por eso no hay Docker Hub ni claves SSH en los secrets: el repo es público y el
+# servidor lee todo lo que necesita sin credenciales.
+#
+# OJO: el servidor busca el check por nombre. Si se le cambia el `name` al job, deja
+# de desplegar sin avisar.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probar:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    # Un MySQL de verdad, la misma versión que el servidor: la mitad de lo que hay
+    # que probar es el SQL.
+    services:
+      mysql:
+        image: mysql:9
+        env:
+          MYSQL_ROOT_PASSWORD: prueba
+          MYSQL_DATABASE: dbz_prueba
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -uroot -pprueba"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+        env:
+          DBZ_LOG: silent
+          DBZ_MYSQL_URL_TEST: mysql://root:prueba@127.0.0.1:3307/dbz_prueba

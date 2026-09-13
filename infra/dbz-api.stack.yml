@@ -1,13 +1,15 @@
 # La API como un servicio más del swarm, igual que el resto de lo que corre acá.
 #
-# Primer despliegue:
-#   printf 'mysql://usuario:clave@host.docker.internal:3306/dbz_cromeros' \
-#     | docker secret create dbz_mysql_url -
-#   DBZ_DOMINIO=api.tudominio.com DBZ_IMAGEN=devgine/dbz-cromeros-api:sha \
-#   DBZ_ORIGENES=https://cartas.tudominio.com \
-#     docker stack deploy -c dbz-api.stack.yml --with-registry-auth dbz-api
+# Primer despliegue (una vez):
+#   bash infra/preparar-base.sh        # base, usuario y secret dbz_mysql_url
+#   printf '%s' "<secreto>" | docker secret create dbz_secreto_proxy -
+#   DBZ_DOMINIO=cartas-api.devgine.com.ar #   DBZ_ORIGENES=https://card-collections-frontend.pages.dev #   DBZ_IMAGEN=dbz-cromeros-api:<commit> #     docker stack deploy -c dbz-api.stack.yml --resolve-image never dbz-api
 #
-# Después de eso el CI sólo cambia la imagen; el stack no se vuelve a tocar.
+# Después el stack no se vuelve a tocar: dbz-despliegue.sh sólo le cambia la imagen.
+# La imagen no está en ningún registry —la construye el servidor—, por eso
+# --resolve-image never. Si hay que volver a correr el stack deploy, pasarle la que
+# está corriendo:
+#   DBZ_IMAGEN=$(docker service inspect dbz-api_api --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
 version: "3.8"
 
 services:

@@ -121,16 +121,43 @@ y la Function pasa a hablarle por HTTPS — o desaparece y el front le pega dire
 ## Despliegue
 
 El VPS es **producción de Devgine con proyectos de clientes andando**. Todo lo de acá es
-aditivo: un stack nuevo, un secret nuevo, un router nuevo en Traefik. No toca `edge`,
-`nobis-panel`, `nobis-pd-calculator` ni `supervisor-comercio`.
+aditivo: un stack, dos secrets del swarm, un `location` en nginx y un timer. No toca
+`edge`, `nobis-panel`, `nobis-pd-calculator` ni `supervisor-comercio`.
 
-Push a `main` → GitHub Actions corre los tests contra un MySQL de verdad, construye la
-imagen, la publica, y recién ahí entra al servidor a cambiarle la imagen al servicio.
+**Push a `main` y listo.** No hay nada más que hacer:
 
-El swarm hace la actualización con `start-first`: la versión nueva levanta y tiene que
-ponerse *healthy* antes de que la anterior se apague. Si no lo logra, `failure_action:
-rollback` la devuelve sola. El healthcheck del contenedor pega contra `/api/salud`, que
-toca la base — un proceso vivo que no llega al MySQL no cuenta como sano.
+1. GitHub Actions corre los tests contra un MySQL 9, la misma versión del servidor.
+2. En el servidor, `dbz-despliegue.timer` mira cada dos minutos el último commit de
+   `main`. Si el check **Tests** de ese commit terminó bien, baja ese commit, construye
+   la imagen `dbz-cromeros-api:<commit>` y le cambia la imagen al servicio.
+3. Si los tests fallaron, no lo toca.
+
+No hay secrets en GitHub, ni Docker Hub, ni claves SSH. El repo es público, así que el
+servidor lee el último commit, el resultado de los tests y el código sin credenciales.
+Una consulta por vuelta son 30 por hora; sin token GitHub deja 60.
+
+El swarm actualiza con `start-first`: la versión nueva levanta y tiene que ponerse
+*healthy* antes de que la anterior se apague. Si no lo logra, `failure_action: rollback`
+la devuelve sola y el commit queda anotado como descartado, para no reintentarlo en cada
+vuelta. El healthcheck pega contra `/api/salud`, que toca la base: un proceso vivo que no
+llega al MySQL no cuenta como sano.
+
+Después de cada deploy se borran las imágenes viejas **de este proyecto** —queda la
+anterior, que es la del rollback— y la caché de build se recorta a 1 GB.
+
+### Mirar qué pasó
+
+```sh
+journalctl -u dbz-despliegue -n 50      # qué hizo en las últimas vueltas
+systemctl list-timers dbz-despliegue    # cuándo mira la próxima vez
+systemctl start dbz-despliegue          # mirar ya, sin esperar
+```
+
+Un commit descartado no se reintenta. Para forzar otro intento:
+`rm /var/lib/dbz-despliegue/descartado-<commit>`.
+
+**El servidor busca el check por nombre.** Si se le cambia el `name: Tests` al job de
+`.github/workflows/tests.yml`, deja de desplegar sin avisar.
 
 ### Preparar el servidor (una vez)
 
@@ -141,42 +168,19 @@ toca la base — un proceso vivo que no llega al MySQL no cuenta como sano.
    ```
 
    Pide la clave de root del MySQL por teclado y no la escribe en ningún lado. La del
-   usuario de la app la genera sola y la deja únicamente adentro del secret: no la tipea
-   nadie y no queda a la vista. El usuario tiene permisos sólo sobre `dbz_cromeros` — no
-   tiene por qué ver las bases de los otros proyectos.
+   usuario de la app la genera sola y la deja únicamente adentro del secret. El usuario
+   tiene permisos sólo sobre `dbz_cromeros`.
 
-2. **El stack**:
+2. **El stack**: los comandos están en la cabecera de `infra/dbz-api.stack.yml`.
 
-   ```sh
-   DBZ_DOMINIO=api.tudominio.com \
-   DBZ_ORIGENES=https://cartas.tudominio.com \
-   DBZ_IMAGEN=devgine/dbz-cromeros-api:<sha> \
-     docker stack deploy -c infra/dbz-api.stack.yml --with-registry-auth dbz-api
-   ```
-
-3. **La clave del deploy**, atada a un solo comando:
+3. **El despliegue automático**:
 
    ```sh
-   install -m 755 infra/dbz-deploy.sh /usr/local/bin/dbz-deploy.sh
-   # y en ~/.ssh/authorized_keys:
-   command="/usr/local/bin/dbz-deploy.sh",restrict ssh-ed25519 AAAA... deploy
+   install -m 755 infra/dbz-despliegue.sh /usr/local/bin/
+   install -m 644 infra/dbz-despliegue.service infra/dbz-despliegue.timer /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now dbz-despliegue.timer
    ```
-
-   `command=` es lo que importa: esa clave no abre una shell ni corre otra cosa. Si se
-   filtra, lo peor que puede hacer es cambiarle la imagen a este servicio — y el script
-   valida que sea `devgine/dbz-cromeros-api:<tag>` y nada más.
-
-### Secrets que necesita el workflow
-
-| Secret | Qué es |
-|---|---|
-| `DOCKERHUB_USUARIO` / `DOCKERHUB_TOKEN` | para publicar la imagen |
-| `SSH_CLAVE` | la privada del par de deploy |
-| `SSH_HOST` · `SSH_PUERTO` · `SSH_USUARIO` | a dónde entrar |
-| `SSH_HUELLA` | salida de `ssh-keyscan -p <puerto> <host>` |
-
-`SSH_HUELLA` no es opcional: sin ella habría que aceptar cualquier host, y ahí
-cualquiera que se meta en el medio se lleva el deploy.
 
 ### Respaldos
 
