@@ -110,6 +110,12 @@ decir "desplegado $CORTO"
 # --- 4. Limpiar ---------------------------------------------------------------------
 # Sólo imágenes de este proyecto, y queda la anterior: sin ella no hay rollback.
 PREVIA=$(imagen_de '{{if .PreviousSpec}}{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}{{end}}')
+# Un `docker image rm` falla mientras un contenedor parado siga usando esa imagen, y el
+# swarm guarda los de las tareas viejas. Se borran sólo los de este servicio: los de los
+# otros proyectos no se tocan.
+docker ps -a --filter "name=dbz-api_api." --filter "status=exited" -q |
+  xargs -r docker rm > /dev/null 2>&1 || true
+
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(devgine/)?dbz-cromeros-api:' |
   while read -r img; do
     [ "$img" = "$IMAGEN:$CORTO" ] || [ "$img" = "$PREVIA" ] ||
