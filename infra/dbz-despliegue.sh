@@ -88,8 +88,15 @@ docker service update --image "$IMAGEN:$CORTO" --no-resolve-image \
   --env-add "DBZ_VERSION=$IMAGEN:$CORTO" \
   --update-order start-first --detach=false --quiet "$SERVICIO" || true
 
+# El swarm tarda un momento en pasar de "updating" a "completed". Leerlo de una hace
+# que un deploy bueno parezca fallado, y entonces el commit queda descartado, la unidad
+# sale con error y no se limpian las imágenes viejas. Se espera a que se asiente.
+for _ in $(seq 1 30); do
+  EST=$(docker service inspect "$SERVICIO" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}')
+  case "$EST" in completed|rollback_completed|paused) break ;; esac
+  sleep 2
+done
 QUEDO=$(imagen_de '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
-EST=$(docker service inspect "$SERVICIO" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}')
 
 if [ "$QUEDO" != "$IMAGEN:$CORTO" ] || [ "$EST" != "completed" ]; then
   decir "NO quedó (estado: ${EST:-?}); el servicio sigue con $QUEDO"
