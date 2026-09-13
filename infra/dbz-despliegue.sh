@@ -81,8 +81,11 @@ fi
 # buscar a Docker Hub, no la encuentra y rechaza la tarea.
 # El stack trae start-first y failure_action: rollback. El código de salida de este
 # comando no es confiable para saber si quedó, así que se comprueba abajo.
+# --env-add: /api/salud contesta con DBZ_VERSION. Sin esto seguiría mostrando la versión
+# del primer stack deploy aunque adentro corra otra.
 decir "actualizando el servicio"
 docker service update --image "$IMAGEN:$CORTO" --no-resolve-image \
+  --env-add "DBZ_VERSION=$IMAGEN:$CORTO" \
   --update-order start-first --detach=false --quiet "$SERVICIO" || true
 
 QUEDO=$(imagen_de '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
