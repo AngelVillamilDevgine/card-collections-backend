@@ -1,0 +1,47 @@
+# El túnel a Cloudflare. Reemplaza al camino actual, que va sin cifrar:
+#   hoy:     Pages Function -> nginx :80 /cartas-api/ -> 127.0.0.1:8081   (HTTP en claro)
+#   con esto: Cloudflare -> túnel cifrado -> dbz-api_api:8787             (sin puertos abiertos)
+#
+# Primer despliegue (una vez que exista la zona cromeros.com.ar en Cloudflare):
+#
+#   1. En Cloudflare: Zero Trust > Networks > Tunnels > Create a tunnel > Cloudflared.
+#      Copiar el token que da (empieza con eyJ...).
+#   2. En el tunnel, agregar un Public Hostname:
+#         api.cromeros.com.ar  ->  HTTP  ->  dbz-api_api:8787
+#      Ese nombre se resuelve solo porque el túnel está en la red proxy del swarm.
+#   3. En el servidor:
+#         DBZ_TUNEL_TOKEN='eyJ...' docker stack deploy -c cloudflared.stack.yml dbz-tunel
+#
+# Después de comprobar que api.cromeros.com.ar responde, recién ahí se desarma lo viejo:
+#   - VITE_API_URL=https://api.cromeros.com.ar en Pages y rebuild.
+#   - DBZ_ORIGENES con el dominio nuevo en el stack de la API.
+#   - Borrar la Function functions/api/[[ruta]].js del front.
+#   - Sacar el "ports: 8081" del stack de la API y el location /cartas-api/ de nginx.
+# En ese orden: primero que el camino nuevo ande, después apagar el viejo.
+version: "3.8"
+
+services:
+  tunel:
+    image: cloudflare/cloudflared:latest
+    # --no-autoupdate: que la versión la cambie un deploy y no el contenedor solo.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${DBZ_TUNEL_TOKEN}
+    # Sin ports: el túnel sale hacia afuera, nadie entra. Por eso tampoco le afecta la
+    # lista blanca de puertos de Dattaweb.
+    networks: [proxy]
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      resources:
+        limits:
+          # El servidor tiene 2 CPUs compartidas con los proyectos de clientes.
+          cpus: "0.25"
+          memory: 128M
+
+networks:
+  proxy:
+    external: true
