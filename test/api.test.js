@@ -43,27 +43,27 @@ async function registrar(usuario, clave = 'kamehameha') {
 const auth = (token) => ({ authorization: `Bearer ${token}` })
 
 test('registro devuelve un token y /yo lo reconoce', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   const r = await pedir({ method: 'GET', url: '/api/yo', headers: auth(token) })
-  assert.equal(r.json().usuario, 'angel')
+  assert.equal(r.json().usuario, 'angel@ejemplo.com')
 })
 
 test('no se puede registrar dos veces el mismo usuario', async () => {
-  await registrar('angel')
+  await registrar('angel@ejemplo.com')
   const r = await pedir({
-    method: 'POST', url: '/api/registro', payload: { usuario: 'ANGEL', clave: 'kamehameha' },
+    method: 'POST', url: '/api/registro', payload: { usuario: 'ANGEL@EJEMPLO.COM', clave: 'kamehameha' },
   })
   // utf8mb4_unicode_ci no distingue mayusculas: Angel y angel son el mismo.
   assert.equal(r.statusCode, 409, r.body)
 })
 
 test('clave incorrecta no entra, y el mensaje no delata si el usuario existe', async () => {
-  await registrar('angel')
+  await registrar('angel@ejemplo.com')
   const mala = await pedir({
-    method: 'POST', url: '/api/sesion', payload: { usuario: 'angel', clave: 'otracosa' },
+    method: 'POST', url: '/api/sesion', payload: { usuario: 'angel@ejemplo.com', clave: 'otracosa' },
   })
   const inexistente = await pedir({
-    method: 'POST', url: '/api/sesion', payload: { usuario: 'goku', clave: 'otracosa' },
+    method: 'POST', url: '/api/sesion', payload: { usuario: 'goku@ejemplo.com', clave: 'otracosa' },
   })
   assert.equal(mala.statusCode, 401)
   assert.equal(inexistente.statusCode, 401)
@@ -71,13 +71,13 @@ test('clave incorrecta no entra, y el mensaje no delata si el usuario existe', a
 })
 
 test('entrar con la clave correcta devuelve un token que sirve', async () => {
-  await registrar('angel')
+  await registrar('angel@ejemplo.com')
   const r = await pedir({
-    method: 'POST', url: '/api/sesion', payload: { usuario: 'angel', clave: 'kamehameha' },
+    method: 'POST', url: '/api/sesion', payload: { usuario: 'angel@ejemplo.com', clave: 'kamehameha' },
   })
   assert.equal(r.statusCode, 200)
   const yo = await pedir({ method: 'GET', url: '/api/yo', headers: auth(r.json().token) })
-  assert.equal(yo.json().usuario, 'angel')
+  assert.equal(yo.json().usuario, 'angel@ejemplo.com')
 })
 
 test('sin token no se lee ni se escribe nada', async () => {
@@ -88,8 +88,8 @@ test('sin token no se lee ni se escribe nada', async () => {
 })
 
 test('LA IMPORTANTE: la colección de uno no se le aparece al otro', async () => {
-  const angel = await registrar('angel')
-  const goku = await registrar('goku')
+  const angel = await registrar('angel@ejemplo.com')
+  const goku = await registrar('goku@ejemplo.com')
 
   await pedir({
     method: 'PUT', url: '/api/cartas/exp-1:5', headers: auth(angel),
@@ -111,7 +111,7 @@ test('LA IMPORTANTE: la colección de uno no se le aparece al otro', async () =>
 })
 
 test('cantidad 0 borra la carta y su condición', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   const poner = (cuerpo) => pedir({
     method: 'PUT', url: '/api/cartas/exp-2:140', headers: auth(token), payload: cuerpo,
   })
@@ -123,7 +123,7 @@ test('cantidad 0 borra la carta y su condición', async () => {
 })
 
 test('no se guarda basura: claves raras, cantidades negativas, estados inventados', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   const casos = [
     ['/api/cartas/..%2F..%2Fetc', { cantidad: 1 }],
     ['/api/cartas/exp-1:5', { cantidad: -3 }],
@@ -137,18 +137,18 @@ test('no se guarda basura: claves raras, cantidades negativas, estados inventado
 })
 
 test('cerrar sesión invalida el token', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   await pedir({ method: 'DELETE', url: '/api/sesion', headers: auth(token) })
   const r = await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
   assert.equal(r.statusCode, 401)
 })
 
 test('borrar el usuario se lleva sus cartas y sus sesiones', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   await pedir({
     method: 'PUT', url: '/api/cartas/exp-1:9', headers: auth(token), payload: { cantidad: 1 },
   })
-  await pool.query('DELETE FROM usuario WHERE usuario = ?', ['angel'])
+  await pool.query('DELETE FROM usuario WHERE usuario = ?', ['angel@ejemplo.com'])
 
   const [cartas] = await pool.query('SELECT count(*) n FROM carta')
   const [sesiones] = await pool.query('SELECT count(*) n FROM sesion')
@@ -157,7 +157,7 @@ test('borrar el usuario se lleva sus cartas y sus sesiones', async () => {
 })
 
 test('reemplazar la colección entera deja sólo lo nuevo', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   await pedir({
     method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 9 },
   })
@@ -172,7 +172,7 @@ test('reemplazar la colección entera deja sólo lo nuevo', async () => {
 })
 
 test('una colección entera de 1936 cartas entra sin romperse', async () => {
-  const token = await registrar('angel')
+  const token = await registrar('angel@ejemplo.com')
   const cantidades = {}
   const estados = {}
   for (let n = 1; n <= 1936; n++) {
@@ -211,7 +211,8 @@ test('un mail sirve de usuario, y uno largo entra en la columna', async () => {
 })
 
 test('sigue sin aceptar cualquier cosa de usuario', async () => {
-  for (const malo of ['ab', 'con espacio', 'barra/adentro', 'a'.repeat(65)]) {
+  // 'angel' entra acá ahora: sin arroba no alcanza para crear una cuenta.
+  for (const malo of ['angel', 'ab', 'con espacio', 'sin@punto', 'a'.repeat(70)]) {
     const r = await pedir({
       method: 'POST', url: '/api/registro', payload: { usuario: malo, clave: 'kamehameha' },
     })
@@ -220,7 +221,7 @@ test('sigue sin aceptar cualquier cosa de usuario', async () => {
 })
 
 test('la sesión dura 30 días y no más', async () => {
-  await registrar('angel')
+  await registrar('angel@ejemplo.com')
   const [filas] = await pool.query('SELECT DATEDIFF(vence, NOW()) dias FROM sesion')
   assert.equal(filas.length, 1, 'debería haber una sola sesión recién creada')
   // Un día de margen: la cuenta la hace MySQL con su propio reloj.

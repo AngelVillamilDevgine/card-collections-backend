@@ -62,14 +62,20 @@ export async function usuarioDeToken(pool, token) {
 }
 
 /* Qué se acepta como nombre y como clave. Los mensajes van al usuario, en castellano. */
+/* Para crear una cuenta pedimos un mail. No se le manda nada: la app no manda mails.
+   Es para que cada uno sepa con qué entró y no queden tres cuentas parecidas del mismo.
+
+   OJO: esto se usa SÓLO al registrarse. Al entrar no se valida el formato, porque hay
+   cuentas viejas con nombre a secas y dejarían de poder entrar. */
+const MAIL = /^[^\s@]{1,64}@[^\s@]{1,63}\.[a-zA-Z]{2,}$/
+
 export function revisarCredenciales(usuario, clave) {
   if (typeof usuario !== 'string' || typeof clave !== 'string')
-    return 'Faltan el usuario o la clave.'
-  // Se aceptan @ y + porque mucha gente pone su mail de usuario. No se valida que
-  // sea un mail de verdad: acá es un nombre para entrar, no una dirección a la que
-  // se le mande nada.
-  if (!/^[a-zA-Z0-9._@+-]{3,64}$/.test(usuario))
-    return 'El usuario va de 3 a 64 caracteres: letras, números, punto, guión, guión bajo, arroba o más.'
+    return 'Faltan el mail o la clave.'
+  // 64 es lo que entra en la columna.
+  if (usuario.length > 64) return 'Ese mail es demasiado largo.'
+  if (!MAIL.test(usuario))
+    return 'Para crear tu cuenta hace falta un mail.'
   if (clave.length < LARGO_CLAVE)
     return `La clave necesita al menos ${LARGO_CLAVE} caracteres.`
   return null
