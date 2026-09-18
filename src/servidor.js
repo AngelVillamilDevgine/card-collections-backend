@@ -31,9 +31,6 @@ export function crearApp(pool) {
 
   app.register(cors, { origin: ORIGENES, credentials: false })
 
-    })
-  }
-
   /* --- Freno a la fuerza bruta -------------------------------------------------
      Sin esto, probar claves contra /sesion sale gratis. Se cuenta por IP y se
      olvida solo; alcanza para lo que es, y no agrega ni una dependencia. */
