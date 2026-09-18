@@ -6,7 +6,8 @@
 // borrando una fila, y no hay nada que firmar ni que caducar del lado del navegador.
 import crypto from 'node:crypto'
 
-const DIAS = 90
+// Cuánto dura una sesión. No hay renovación: vencido el plazo, hay que entrar de nuevo.
+const DIAS = 30
 const LARGO_CLAVE = 8
 const SCRYPT = { N: 16384, r: 8, p: 1 }
 

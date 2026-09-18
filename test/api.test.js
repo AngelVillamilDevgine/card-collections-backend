@@ -218,3 +218,11 @@ test('sigue sin aceptar cualquier cosa de usuario', async () => {
     assert.equal(r.statusCode, 400, `"${malo.slice(0, 20)}" devolvió ${r.statusCode}`)
   }
 })
+
+test('la sesión dura 30 días y no más', async () => {
+  await registrar('angel')
+  const [filas] = await pool.query('SELECT DATEDIFF(vence, NOW()) dias FROM sesion')
+  assert.equal(filas.length, 1, 'debería haber una sola sesión recién creada')
+  // Un día de margen: la cuenta la hace MySQL con su propio reloj.
+  assert.ok(Math.abs(filas[0].dias - 30) <= 1, `la sesión duró ${filas[0].dias} días`)
+})
