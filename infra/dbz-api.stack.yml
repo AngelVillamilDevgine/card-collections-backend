@@ -17,28 +17,19 @@ services:
     image: ${DBZ_IMAGEN}
     networks: [proxy]
 
-    # Publicado porque quien le habla es una Function de Cloudflare Pages, que no puede
-    # llegar por Traefik: eso necesitaría un dominio propio, que hoy no hay. El puerto
-    # queda abierto al mundo y lo único que lo cuida es la cabecera secreta.
-    #
-    # 8081 y no cualquiera: Dattaweb filtra por lista blanca antes de que el paquete
-    # llegue al servidor. Pasan 80, 443, 3000, 3306, 4000, 7000, 8081 y el de SSH; el
-    # resto se descarta en el camino. De esos, 8081 era el único libre.
-    ports:
-      - "8081:8787"
+    # Sin ports: no hay ningún puerto publicado. Se entra sólo por Traefik, con el
+    # tramo cifrado. Antes estaba el 8081 abierto porque la Function de Pages no tenía
+    # forma de llegar de otra manera.
 
     environment:
       # La URL con la contraseña entra por el secret, no por acá.
       DBZ_MYSQL_URL_FILE: /run/secrets/dbz_mysql_url
-      # Sin esta cabecera la API contesta 404 a todo: es lo que separa a la Function
-      # de cualquiera que escanee el puerto.
-      DBZ_SECRETO_PROXY_FILE: /run/secrets/dbz_secreto_proxy
       # Qué front tiene permiso de pedirle a esta API. Sin esto el navegador corta.
       DBZ_ORIGENES: ${DBZ_ORIGENES}
       DBZ_VERSION: ${DBZ_IMAGEN}
       PORT: "8787"
 
-    secrets: [dbz_mysql_url, dbz_secreto_proxy]
+    secrets: [dbz_mysql_url]
 
     # El MySQL no es un servicio del swarm: es un contenedor suelto con el 3306
     # publicado en el host. Desde acá se llega por la gateway de Docker, que es lo
@@ -89,6 +80,4 @@ networks:
 
 secrets:
   dbz_mysql_url:
-    external: true
-  dbz_secreto_proxy:
     external: true

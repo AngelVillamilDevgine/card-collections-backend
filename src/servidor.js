@@ -10,22 +10,6 @@ import {
   usuarioDeToken, revisarCredenciales, tokenDe,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
-import fs from 'node:fs'
-import crypto from 'node:crypto'
-
-/* El secreto llega como secret del swarm (un archivo) o como variable, para local. */
-function leerSecreto() {
-  const archivo = process.env.DBZ_SECRETO_PROXY_FILE
-  if (archivo) return fs.readFileSync(archivo, 'utf8').trim()
-  return process.env.DBZ_SECRETO_PROXY ?? null
-}
-
-/* Comparar con === diría por el tiempo cuántos caracteres acertó quien prueba. */
-function igualesSinFiltrarTiempo(a, b) {
-  const x = Buffer.from(String(a))
-  const y = Buffer.from(String(b))
-  return x.length === y.length && crypto.timingSafeEqual(x, y)
-}
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -47,25 +31,6 @@ export function crearApp(pool) {
 
   app.register(cors, { origin: ORIGENES, credentials: false })
 
-  /* --- El portero ---------------------------------------------------------------
-     Esta API está publicada en un puerto propio del VPS porque quien le habla es una
-     Function de Cloudflare Pages, que no puede llegarle por Traefik (haría falta un
-     dominio que hoy no tenemos). Un puerto abierto lo encuentra cualquier escáner en
-     horas, así que sin esta cabecera no se pasa de acá.
-
-     OJO: esto autentica a la Function, no cifra nada. El tramo va en claro; es la
-     decisión que se tomó a sabiendas. Ver el README. */
-  const SECRETO = leerSecreto()
-
-  if (SECRETO) {
-    app.addHook('onRequest', async (pedido, respuesta) => {
-      // /api/salud queda afuera: lo consulta el healthcheck del contenedor y no
-      // devuelve nada que no se pueda ver.
-      if (pedido.url.startsWith('/api/salud')) return
-      const dado = pedido.headers['x-dbz-proxy']
-      if (!dado || !igualesSinFiltrarTiempo(dado, SECRETO)) {
-        return respuesta.code(404).send({ error: 'No existe.' })
-      }
     })
   }
 
