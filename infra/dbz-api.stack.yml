@@ -56,7 +56,11 @@ services:
         - "traefik.docker.network=proxy"
         - "traefik.http.routers.dbz-api.rule=Host(`${DBZ_DOMINIO}`)"
         - "traefik.http.routers.dbz-api.entrypoints=websecure"
-        - "traefik.http.routers.dbz-api.tls.certresolver=le"
+        # tls sin resolver: Traefik sirve su certificado autofirmado y Cloudflare, en modo
+        # Full, lo acepta. El resolver "le" usa credenciales de la cuenta de Devgine y no
+        # puede validar cromeros.com.ar: si quedara puesto, reintentaria contra Let's
+        # Encrypt y podria pegarle a los limites del stack edge, que es de los clientes.
+        - "traefik.http.routers.dbz-api.tls=true"
         - "traefik.http.services.dbz-api.loadbalancer.server.port=8787"
 
       update_config:
