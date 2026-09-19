@@ -26,6 +26,8 @@ services:
       DBZ_MYSQL_URL_FILE: /run/secrets/dbz_mysql_url
       # Qué front tiene permiso de pedirle a esta API. Sin esto el navegador corta.
       DBZ_ORIGENES: ${DBZ_ORIGENES}
+      # Quién ve /api/admin/resumen. Separados por coma si alguna vez son varios.
+      DBZ_ADMINS: ${DBZ_ADMINS}
       DBZ_VERSION: ${DBZ_IMAGEN}
       PORT: "8787"
 

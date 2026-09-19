@@ -10,6 +10,7 @@ import {
   usuarioDeToken, revisarCredenciales, tokenDe,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
+import { resumen } from './estadisticas.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -17,8 +18,15 @@ const DIRECCION = process.env.DBZ_DIRECCION ?? '0.0.0.0'
 
 // El front vive en otro dominio (Cloudflare), así que hay que decir cuáles pueden
 // pedirle a esta API. Sin esto el navegador corta el pedido.
+/* Quién ve las estadísticas. Por variable y no por una columna en la base: hay un solo
+   admin, y así se saca a alguien sin tocar datos. */
+const ADMINS = (process.env.DBZ_ADMINS ?? '')
+  .split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)
+
 const ORIGENES = (process.env.DBZ_ORIGENES ?? 'http://localhost:5173')
   .split(',').map((o) => o.trim()).filter(Boolean)
+
+const esAdmin = (usuario) => ADMINS.includes(String(usuario).toLowerCase())
 
 export function crearApp(pool) {
   const app = Fastify({
@@ -82,7 +90,7 @@ export function crearApp(pool) {
       throw e
     }
 
-    return { token: await crearSesion(pool, id), usuario }
+    return { token: await crearSesion(pool, id), usuario, admin: esAdmin(usuario) }
   })
 
   app.post('/api/sesion', async (pedido, respuesta) => {
@@ -105,7 +113,7 @@ export function crearApp(pool) {
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
     perdonar(pedido.ip)
-    return { token: await crearSesion(pool, fila.id), usuario: fila.usuario }
+    return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
   })
 
   app.delete('/api/sesion', { preHandler: conSesion }, async (pedido) => {
@@ -115,7 +123,15 @@ export function crearApp(pool) {
 
   app.get('/api/yo', { preHandler: conSesion }, async (pedido) => ({
     usuario: pedido.usuario.usuario,
+    admin: esAdmin(pedido.usuario.usuario),
   }))
+
+  /* --- Estadísticas, sólo para el admin ------------------------------------------ */
+  app.get('/api/admin/resumen', { preHandler: conSesion }, async (pedido, respuesta) => {
+    // 404 y no 403: a quien no es admin no se le confirma que esto existe.
+    if (!esAdmin(pedido.usuario.usuario)) return respuesta.code(404).send({ error: 'No existe.' })
+    return resumen(pool)
+  })
 
   /* --- Colección ------------------------------------------------------------- */
 
