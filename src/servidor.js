@@ -10,7 +10,7 @@ import {
   usuarioDeToken, revisarCredenciales, tokenDe,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
-import { resumen } from './estadisticas.js'
+import { anotarVisita, resumen } from './estadisticas.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -68,6 +68,7 @@ export function crearApp(pool) {
     const usuario = await usuarioDeToken(pool, tokenDe(pedido))
     if (!usuario) return respuesta.code(401).send({ error: 'Tenés que entrar de nuevo.' })
     pedido.usuario = usuario
+    anotarVisita(pool, usuario.id) // una vez por día, y sin esperarla
   }
 
   app.post('/api/registro', async (pedido, respuesta) => {
@@ -90,6 +91,7 @@ export function crearApp(pool) {
       throw e
     }
 
+    anotarVisita(pool, id)
     return { token: await crearSesion(pool, id), usuario, admin: esAdmin(usuario) }
   })
 
@@ -113,6 +115,7 @@ export function crearApp(pool) {
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
     perdonar(pedido.ip)
+    anotarVisita(pool, fila.id)
     return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
   })
 

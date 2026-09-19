@@ -42,6 +42,28 @@ test('el que no es admin no ve nada, y ni se entera de que existe', async () => 
   assert.equal(r.statusCode, 404)
 })
 
+/* Esto es lo que hace que el panel sirva para decidir algo: si "volvieron otro día"
+   se midiera con las sesiones, el que entra una vez y usa la app todos los días
+   contaría como que no volvió, porque la sesión dura 30 días. */
+test('usar la app anota el día, aunque no se entre de nuevo', async () => {
+  const token = await registrar(OTRO)
+  await app.inject({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+
+  // La visita se anota sin esperarla, así que se le da un momento.
+  let filas = []
+  for (let i = 0; i < 40 && !filas.length; i++) {
+    ;[filas] = await pool.query('SELECT dia FROM visita')
+    if (!filas.length) await new Promise((r) => setTimeout(r, 25))
+  }
+  assert.equal(filas.length, 1, 'tendría que haber un día anotado, y uno solo')
+
+  // Y mil pedidos más del mismo día no agregan filas.
+  for (let i = 0; i < 5; i++)
+    await app.inject({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  const [despues] = await pool.query('SELECT COUNT(*) n FROM visita')
+  assert.equal(Number(despues[0].n), 1)
+})
+
 test('sin sesión tampoco', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/admin/resumen' })
   assert.equal(r.statusCode, 401)

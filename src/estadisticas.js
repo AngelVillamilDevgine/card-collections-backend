@@ -1,8 +1,9 @@
 // Los números para decidir sobre la app. No hay gráficos ni métricas de vanidad: lo que
 // importa es cuántos entran, cuántos la usan de verdad y cuántos vuelven.
 //
-// "Última entrada" sale de cuándo se creó la sesión más nueva. No hay una columna de
-// última actividad en carta, y agregarla costaría una escritura por cada toque.
+// "Última vez" y "días" salen de la tabla `visita`, que anota un día por usuario la
+// primera vez que pide algo en el día. Cuesta un INSERT por usuario por día, no uno
+// por cada toque de carta.
 
 const TOTAL_CARTAS = 1936 // la colección completa; el front la saca del catálogo
 
@@ -20,8 +21,28 @@ async function una(pool, sql, args = []) {
   return valor == null ? 0 : Number(valor)
 }
 
+/* Un día por usuario y nada más. El Map evita repetir el INSERT en cada pedido: se
+   pierde al reiniciar y entonces se hace uno de más, que no le duele a nadie.
+
+   Sin await a propósito: nadie espera por una estadística. Si falla, se olvida la
+   marca para volver a intentar en el pedido siguiente. */
+const anotados = new Map()
+
+export const hoyAca = () => new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+export function anotarVisita(pool, usuarioId) {
+  const hoy = hoyAca()
+  if (anotados.get(usuarioId) === hoy) return
+  if (anotados.size > 5000) anotados.clear() // que no crezca para siempre
+  anotados.set(usuarioId, hoy)
+  // Devuelve la promesa por si alguien quiere esperarla (los tests); el servidor no.
+  return pool
+    .query('INSERT IGNORE INTO visita (usuario_id, dia) VALUES (?, ?)', [usuarioId, hoy])
+    .catch(() => anotados.delete(usuarioId))
+}
+
 export async function resumen(pool) {
-  const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, sesiones] =
+  const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7] =
     await Promise.all([
       una(pool, 'SELECT COUNT(*) FROM usuario'),
       una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM carta'),
@@ -29,11 +50,14 @@ export async function resumen(pool) {
       una(pool, 'SELECT COALESCE(SUM(cantidad - 1), 0) FROM carta'),
       una(pool, 'SELECT COUNT(*) FROM usuario WHERE creado > NOW() - INTERVAL 7 DAY'),
       una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) = DATE(${aca('NOW()')})`),
-      // Volver otro día es la señal de que la app sirve para algo.
+      // Volver otro día es la señal de que la app sirve para algo. Se cuenta con
+      // `visita`, no con `sesion`: la sesión dura 30 días, así que el que entra una
+      // vez y la usa todos los días no crea ninguna sesión nueva.
       una(pool, `SELECT COUNT(*) FROM (
-                   SELECT usuario_id FROM sesion GROUP BY usuario_id
-                    HAVING COUNT(DISTINCT DATE(${aca('creado')})) > 1) t`),
-      una(pool, 'SELECT COUNT(*) FROM sesion WHERE vence > NOW()'),
+                   SELECT usuario_id FROM visita GROUP BY usuario_id
+                    HAVING COUNT(*) > 1) t`),
+      una(pool, 'SELECT COUNT(*) FROM visita WHERE dia = ?', [hoyAca()]),
+      una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE dia > DATE_SUB(?, INTERVAL 7 DAY)', [hoyAca()]),
     ])
 
   const [porDia] = await pool.query(
@@ -60,8 +84,8 @@ export async function resumen(pool) {
             DATE_FORMAT(${aca('u.creado')}, '%Y-%m-%d') alta,
             COUNT(c.clave) cartas,
             COALESCE(SUM(c.cantidad - 1), 0) repetidas,
-            (SELECT DATE_FORMAT(${aca('MAX(s.creado)')}, '%Y-%m-%d') FROM sesion s WHERE s.usuario_id = u.id) ultima,
-            (SELECT COUNT(DISTINCT DATE(${aca('s.creado')})) FROM sesion s WHERE s.usuario_id = u.id) dias
+            (SELECT DATE_FORMAT(MAX(v.dia), '%Y-%m-%d') FROM visita v WHERE v.usuario_id = u.id) ultima,
+            (SELECT COUNT(*) FROM visita v WHERE v.usuario_id = u.id) dias
        FROM usuario u LEFT JOIN carta c ON c.usuario_id = u.id
       GROUP BY u.id
       ORDER BY cartas DESC, u.creado DESC`
@@ -69,7 +93,7 @@ export async function resumen(pool) {
 
   return {
     total: TOTAL_CARTAS,
-    usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, sesiones },
+    usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7 },
     cartas: { total: cartas, repetidas },
     porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
     tramos: tramos.map((f) => ({ tramo: f.tramo, cuantos: Number(f.cuantos) })),

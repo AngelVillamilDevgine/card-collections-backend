@@ -31,6 +31,18 @@ const TABLAS = [
        REFERENCES usuario(id) ON DELETE CASCADE
    ) ${COLACION}`,
 
+  // Un día en que el usuario usó la app. Sirve para lo único que importa saber:
+  // cuántos vuelven. Antes se miraba `sesion`, pero una sesión dura 30 días, así que
+  // el que entra una vez y la usa todos los días figuraba como que no volvió nunca.
+  `CREATE TABLE IF NOT EXISTS visita (
+     usuario_id INT UNSIGNED NOT NULL,
+     dia        DATE         NOT NULL,
+     PRIMARY KEY (usuario_id, dia),
+     KEY visita_por_dia (dia),
+     CONSTRAINT visita_de_usuario FOREIGN KEY (usuario_id)
+       REFERENCES usuario(id) ON DELETE CASCADE
+   ) ${COLACION}`,
+
   // No tener una carta no es una fila con un cero: es no tener fila.
   `CREATE TABLE IF NOT EXISTS carta (
      usuario_id INT UNSIGNED     NOT NULL,
@@ -68,6 +80,22 @@ export function conectar(url = urlDeConexion()) {
 export async function prepararEsquema(pool) {
   for (const sql of TABLAS) await pool.query(sql)
   await ensancharUsuario(pool)
+  await sembrarVisitas(pool)
+}
+
+/* `visita` nació vacía, con la app andando hace una semana. Lo que ya se sabía de
+   antes son dos cosas: el día que cada uno se anotó, y los días en que escribió la
+   clave. No es todo lo que hizo, pero es mejor que empezar de cero.
+
+   Sólo la primera vez: si la tabla tiene algo, esto no corre. */
+async function sembrarVisitas(pool) {
+  const [[{ hay }]] = await pool.query('SELECT COUNT(*) hay FROM visita')
+  if (hay) return
+  const aca = (col) => `DATE(CONVERT_TZ(${col}, '+00:00', '-03:00'))`
+  await pool.query(`INSERT IGNORE INTO visita (usuario_id, dia)
+                    SELECT id, ${aca('creado')} FROM usuario`)
+  await pool.query(`INSERT IGNORE INTO visita (usuario_id, dia)
+                    SELECT usuario_id, ${aca('creado')} FROM sesion`)
 }
 
 /* La columna nació de 32 y un mail entra justo o no entra. CREATE TABLE IF NOT EXISTS
