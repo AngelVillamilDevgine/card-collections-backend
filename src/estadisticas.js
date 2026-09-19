@@ -6,9 +6,12 @@
 
 const TOTAL_CARTAS = 1936 // la colección completa; el front la saca del catálogo
 
+/* Number() a propósito: MySQL devuelve los SUM() como texto, porque son DECIMAL, y
+   entonces 2 no es igual a '2' del otro lado. */
 async function una(pool, sql, args = []) {
   const [filas] = await pool.query(sql, args)
-  return filas[0] ? Object.values(filas[0])[0] : 0
+  const valor = filas[0] ? Object.values(filas[0])[0] : 0
+  return valor == null ? 0 : Number(valor)
 }
 
 export async function resumen(pool) {
@@ -28,9 +31,9 @@ export async function resumen(pool) {
     ])
 
   const [porDia] = await pool.query(
-    `SELECT DATE(creado) dia, COUNT(*) cuantos FROM usuario
+    `SELECT DATE_FORMAT(creado, '%Y-%m-%d') dia, COUNT(*) cuantos FROM usuario
       WHERE creado > NOW() - INTERVAL 14 DAY
-      GROUP BY DATE(creado) ORDER BY dia`
+      GROUP BY dia ORDER BY dia`
   )
 
   const [tramos] = await pool.query(
@@ -48,10 +51,10 @@ export async function resumen(pool) {
 
   const [gente] = await pool.query(
     `SELECT u.usuario,
-            DATE(u.creado) alta,
+            DATE_FORMAT(u.creado, '%Y-%m-%d') alta,
             COUNT(c.clave) cartas,
             COALESCE(SUM(c.cantidad - 1), 0) repetidas,
-            (SELECT DATE(MAX(s.creado)) FROM sesion s WHERE s.usuario_id = u.id) ultima,
+            (SELECT DATE_FORMAT(MAX(s.creado), '%Y-%m-%d') FROM sesion s WHERE s.usuario_id = u.id) ultima,
             (SELECT COUNT(DISTINCT DATE(s.creado)) FROM sesion s WHERE s.usuario_id = u.id) dias
        FROM usuario u LEFT JOIN carta c ON c.usuario_id = u.id
       GROUP BY u.id
@@ -62,14 +65,14 @@ export async function resumen(pool) {
     total: TOTAL_CARTAS,
     usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, sesiones },
     cartas: { total: cartas, repetidas },
-    porDia: porDia.map((f) => ({ dia: String(f.dia).slice(0, 10), cuantos: Number(f.cuantos) })),
+    porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
     tramos: tramos.map((f) => ({ tramo: f.tramo, cuantos: Number(f.cuantos) })),
     gente: gente.map((f) => ({
       usuario: f.usuario,
-      alta: String(f.alta).slice(0, 10),
+      alta: f.alta,
       cartas: Number(f.cartas),
       repetidas: Number(f.repetidas),
-      ultima: f.ultima ? String(f.ultima).slice(0, 10) : null,
+      ultima: f.ultima ?? null,
       dias: Number(f.dias),
     })),
   }
