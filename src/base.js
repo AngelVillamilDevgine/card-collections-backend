@@ -37,6 +37,7 @@ const TABLAS = [
   `CREATE TABLE IF NOT EXISTS visita (
      usuario_id INT UNSIGNED NOT NULL,
      dia        DATE         NOT NULL,
+     app        TINYINT UNSIGNED NOT NULL DEFAULT 0,
      PRIMARY KEY (usuario_id, dia),
      KEY visita_por_dia (dia),
      CONSTRAINT visita_de_usuario FOREIGN KEY (usuario_id)
@@ -80,7 +81,20 @@ export function conectar(url = urlDeConexion()) {
 export async function prepararEsquema(pool) {
   for (const sql of TABLAS) await pool.query(sql)
   await ensancharUsuario(pool)
+  await columnaApp(pool)
   await sembrarVisitas(pool)
+}
+
+/* `visita` nació sin la columna `app`, y CREATE TABLE IF NOT EXISTS no toca una tabla
+   que ya existe. Igual que con el ancho de `usuario`: se agrega a mano, y sólo si
+   falta. Cuenta si ese día entró desde la app instalada en el teléfono. */
+async function columnaApp(pool) {
+  const [filas] = await pool.query(
+    `SELECT 1 FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'visita' AND COLUMN_NAME = 'app'`
+  )
+  if (!filas.length)
+    await pool.query('ALTER TABLE visita ADD COLUMN app TINYINT UNSIGNED NOT NULL DEFAULT 0')
 }
 
 /* `visita` nació vacía, con la app andando hace una semana. Lo que ya se sabía de

@@ -30,19 +30,26 @@ const anotados = new Map()
 
 export const hoyAca = () => new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-export function anotarVisita(pool, usuarioId) {
+export function anotarVisita(pool, usuarioId, esApp = false) {
   const hoy = hoyAca()
-  if (anotados.get(usuarioId) === hoy) return
+  // La marca lleva si vino de la app: si hoy ya entró por el navegador y después abre
+  // la app, la fila tiene que pasar a contar como app igual.
+  const marca = `${hoy}:${esApp ? 1 : 0}`
+  if (anotados.get(usuarioId) === marca) return
   if (anotados.size > 5000) anotados.clear() // que no crezca para siempre
-  anotados.set(usuarioId, hoy)
+  anotados.set(usuarioId, marca)
   // Devuelve la promesa por si alguien quiere esperarla (los tests); el servidor no.
   return pool
-    .query('INSERT IGNORE INTO visita (usuario_id, dia) VALUES (?, ?)', [usuarioId, hoy])
+    .query(
+      `INSERT INTO visita (usuario_id, dia, app) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE app = GREATEST(app, VALUES(app))`,
+      [usuarioId, hoy, esApp ? 1 : 0]
+    )
     .catch(() => anotados.delete(usuarioId))
 }
 
 export async function resumen(pool) {
-  const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7] =
+  const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp] =
     await Promise.all([
       una(pool, 'SELECT COUNT(*) FROM usuario'),
       una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM carta'),
@@ -58,6 +65,8 @@ export async function resumen(pool) {
                     HAVING COUNT(*) > 1) t`),
       una(pool, 'SELECT COUNT(*) FROM visita WHERE dia = ?', [hoyAca()]),
       una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE dia > DATE_SUB(?, INTERVAL 7 DAY)', [hoyAca()]),
+      // La instalaron en el teléfono. Es el paso que más hace volver a la gente.
+      una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE app = 1'),
     ])
 
   const [porDia] = await pool.query(
@@ -85,7 +94,8 @@ export async function resumen(pool) {
             COUNT(c.clave) cartas,
             COALESCE(SUM(c.cantidad - 1), 0) repetidas,
             (SELECT DATE_FORMAT(MAX(v.dia), '%Y-%m-%d') FROM visita v WHERE v.usuario_id = u.id) ultima,
-            (SELECT COUNT(*) FROM visita v WHERE v.usuario_id = u.id) dias
+            (SELECT COUNT(*) FROM visita v WHERE v.usuario_id = u.id) dias,
+            (SELECT MAX(v.app) FROM visita v WHERE v.usuario_id = u.id) app
        FROM usuario u LEFT JOIN carta c ON c.usuario_id = u.id
       GROUP BY u.id
       ORDER BY cartas DESC, u.creado DESC`
@@ -93,7 +103,7 @@ export async function resumen(pool) {
 
   return {
     total: TOTAL_CARTAS,
-    usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7 },
+    usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp },
     cartas: { total: cartas, repetidas },
     porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
     tramos: tramos.map((f) => ({ tramo: f.tramo, cuantos: Number(f.cuantos) })),
@@ -104,6 +114,7 @@ export async function resumen(pool) {
       repetidas: Number(f.repetidas),
       ultima: f.ultima ?? null,
       dias: Number(f.dias),
+      app: Number(f.app) === 1,
     })),
   }
 }

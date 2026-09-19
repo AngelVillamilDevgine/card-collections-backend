@@ -68,7 +68,9 @@ export function crearApp(pool) {
     const usuario = await usuarioDeToken(pool, tokenDe(pedido))
     if (!usuario) return respuesta.code(401).send({ error: 'Tenés que entrar de nuevo.' })
     pedido.usuario = usuario
-    anotarVisita(pool, usuario.id) // una vez por día, y sin esperarla
+    // `?app=1` lo manda el front cuando corre como app instalada. Va en la dirección y
+    // no en una cabecera para no obligar a un pedido de permiso previo.
+    anotarVisita(pool, usuario.id, pedido.query?.app === '1') // una vez por día, sin esperarla
   }
 
   app.post('/api/registro', async (pedido, respuesta) => {
@@ -91,7 +93,7 @@ export function crearApp(pool) {
       throw e
     }
 
-    anotarVisita(pool, id)
+    anotarVisita(pool, id, pedido.query?.app === '1')
     return { token: await crearSesion(pool, id), usuario, admin: esAdmin(usuario) }
   })
 
@@ -115,7 +117,7 @@ export function crearApp(pool) {
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
     perdonar(pedido.ip)
-    anotarVisita(pool, fila.id)
+    anotarVisita(pool, fila.id, pedido.query?.app === '1')
     return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
   })
 

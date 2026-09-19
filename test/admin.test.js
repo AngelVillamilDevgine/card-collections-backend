@@ -64,6 +64,31 @@ test('usar la app anota el día, aunque no se entre de nuevo', async () => {
   assert.equal(Number(despues[0].n), 1)
 })
 
+/* Saber cuántos la instalaron es lo que va a decir si el aviso sirvió. Y una vez que
+   el día quedó marcado como app, entrar por el navegador no lo tiene que borrar. */
+test('entrar como app queda anotado, y el navegador no lo pisa', async () => {
+  const r = await app.inject({ method: 'POST', url: '/api/registro?app=1', payload: { usuario: OTRO, clave: 'kamehameha' } })
+  assert.equal(r.statusCode, 200, r.body)
+  const token = r.json().token
+
+  let filas = []
+  for (let i = 0; i < 40 && !filas.length; i++) {
+    ;[filas] = await pool.query('SELECT app FROM visita')
+    if (!filas.length) await new Promise((r2) => setTimeout(r2, 25))
+  }
+  assert.equal(Number(filas[0].app), 1, 'el día tendría que haber quedado marcado como app')
+
+  await app.inject({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  await new Promise((r2) => setTimeout(r2, 150))
+  const [despues] = await pool.query('SELECT app, COUNT(*) n FROM visita GROUP BY app')
+  assert.equal(despues.length, 1)
+  assert.equal(Number(despues[0].app), 1, 'un pedido desde el navegador no puede desmarcarlo')
+  assert.equal(Number(despues[0].n), 1)
+
+  const resumen = await app.inject({ method: 'GET', url: '/api/admin/resumen', headers: auth(await registrar(ADMIN)) })
+  assert.equal(resumen.json().usuarios.conApp, 1)
+})
+
 test('sin sesión tampoco', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/admin/resumen' })
   assert.equal(r.statusCode, 401)
