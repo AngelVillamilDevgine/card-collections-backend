@@ -6,6 +6,12 @@
 
 const TOTAL_CARTAS = 1936 // la colección completa; el front la saca del catálogo
 
+/* El MySQL del servidor corre en UTC y acá son las tres menos: sin esto, todo lo que
+   pasa después de las nueve de la noche cuenta como del día siguiente. Argentina no
+   mueve la hora desde 2009, así que el -03:00 fijo alcanza y no hace falta que la base
+   tenga cargadas las tablas de husos (los desplazamientos numéricos andan siempre). */
+const aca = (col) => `CONVERT_TZ(${col}, '+00:00', '-03:00')`
+
 /* Number() a propósito: MySQL devuelve los SUM() como texto, porque son DECIMAL, y
    entonces 2 no es igual a '2' del otro lado. */
 async function una(pool, sql, args = []) {
@@ -22,16 +28,16 @@ export async function resumen(pool) {
       una(pool, 'SELECT COUNT(*) FROM carta'),
       una(pool, 'SELECT COALESCE(SUM(cantidad - 1), 0) FROM carta'),
       una(pool, 'SELECT COUNT(*) FROM usuario WHERE creado > NOW() - INTERVAL 7 DAY'),
-      una(pool, 'SELECT COUNT(*) FROM usuario WHERE DATE(creado) = CURDATE()'),
+      una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) = DATE(${aca('NOW()')})`),
       // Volver otro día es la señal de que la app sirve para algo.
       una(pool, `SELECT COUNT(*) FROM (
                    SELECT usuario_id FROM sesion GROUP BY usuario_id
-                    HAVING COUNT(DISTINCT DATE(creado)) > 1) t`),
+                    HAVING COUNT(DISTINCT DATE(${aca('creado')})) > 1) t`),
       una(pool, 'SELECT COUNT(*) FROM sesion WHERE vence > NOW()'),
     ])
 
   const [porDia] = await pool.query(
-    `SELECT DATE_FORMAT(creado, '%Y-%m-%d') dia, COUNT(*) cuantos FROM usuario
+    `SELECT DATE_FORMAT(${aca('creado')}, '%Y-%m-%d') dia, COUNT(*) cuantos FROM usuario
       WHERE creado > NOW() - INTERVAL 14 DAY
       GROUP BY dia ORDER BY dia`
   )
@@ -51,11 +57,11 @@ export async function resumen(pool) {
 
   const [gente] = await pool.query(
     `SELECT u.usuario,
-            DATE_FORMAT(u.creado, '%Y-%m-%d') alta,
+            DATE_FORMAT(${aca('u.creado')}, '%Y-%m-%d') alta,
             COUNT(c.clave) cartas,
             COALESCE(SUM(c.cantidad - 1), 0) repetidas,
-            (SELECT DATE_FORMAT(MAX(s.creado), '%Y-%m-%d') FROM sesion s WHERE s.usuario_id = u.id) ultima,
-            (SELECT COUNT(DISTINCT DATE(s.creado)) FROM sesion s WHERE s.usuario_id = u.id) dias
+            (SELECT DATE_FORMAT(${aca('MAX(s.creado)')}, '%Y-%m-%d') FROM sesion s WHERE s.usuario_id = u.id) ultima,
+            (SELECT COUNT(DISTINCT DATE(${aca('s.creado')})) FROM sesion s WHERE s.usuario_id = u.id) dias
        FROM usuario u LEFT JOIN carta c ON c.usuario_id = u.id
       GROUP BY u.id
       ORDER BY cartas DESC, u.creado DESC`
