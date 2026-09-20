@@ -1,0 +1,14 @@
+[Unit]
+Description=Sacar una copia de la base de las cartas todos los dias
+
+[Timer]
+OnCalendar=daily
+# Si el servidor estuvo apagado a esa hora, la saca al arrancar en vez de saltearla.
+Persistent=true
+# Para no caer en el mismo minuto que todo lo demas que corre "daily" en esta maquina,
+# que es compartida con los proyectos de clientes.
+RandomizedDelaySec=20min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

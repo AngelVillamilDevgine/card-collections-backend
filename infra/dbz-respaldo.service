@@ -1,0 +1,10 @@
+[Unit]
+Description=Copia diaria de la base de las cartas
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dbz-respaldo.sh
+# El volcado son 20 KB: si tarda más que esto, algo anda mal y conviene que falle.
+TimeoutStartSec=10min

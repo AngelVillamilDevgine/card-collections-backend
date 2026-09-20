@@ -184,6 +184,33 @@ Un commit descartado no se reintenta. Para forzar otro intento:
 
 ### Respaldos
 
-No los hace esta app. La base es el MySQL compartido del servidor, así que respaldarlo
-es una decisión de infraestructura, no de este proyecto. Del lado del usuario está
-"Bajar una copia", que se lleva la colección entera en un `.json`.
+Una copia por día de `dbz_cromeros`, y **sólo de esa base**: no toca las de los otros
+proyectos del servidor ni nada más de la máquina.
+
+| | |
+|---|---|
+| Qué | `infra/dbz-respaldo.sh`, que corre `dbz-respaldo.timer` una vez por día |
+| Dónde | `/var/backups/dbz/dbz_cromeros-<fecha>.sql.gz`, sólo root (700 la carpeta, 600 los archivos) |
+| Cuánto | 20 KB por copia. Se guardan 30 días: 600 KB en total |
+| Con qué credenciales | el usuario `dbz`, desde `/etc/dbz-respaldo.cnf` (sólo root). **No** las de root del MySQL, que es compartido |
+| Log | `journalctl -u dbz-respaldo` |
+
+El volcado se escribe como `.parcial` y recién se le pone el nombre bueno si pasa un
+control: que pese más de 5 KB y que traiga las cuatro tablas. **Un archivo vacío o a
+medias es peor que no tener nada**, porque parece que hay copia y no hay.
+
+**Probar la restauración es parte del trabajo, no un extra.** Está
+`infra/dbz-probar-restauracion.sh`: restaura la copia más nueva en una base aparte,
+compara fila por fila contra la de verdad y la borra. No toca `dbz_cromeros`. Pide la
+clave de root por teclado, porque hay que crear una base y este repo es público.
+Corrido el 2026-09-20: 28 usuarios, 5245 cartas, 38 visitas y 43 sesiones, **cero
+diferencias**.
+
+Los pasos para restaurar de verdad están al final de `infra/dbz-respaldo.sh`.
+
+**Lo que esto NO cubre:** las copias viven en el mismo disco que la base. Protegen de un
+`DELETE` mal hecho, de un bug o de un borrado accidental — que son los casos más
+probables — pero no de perder el VPS. El destino externo se puede agregar después sin
+rehacer nada.
+
+Del lado del usuario está "Bajar una copia", que se lleva su colección en un `.json`.
