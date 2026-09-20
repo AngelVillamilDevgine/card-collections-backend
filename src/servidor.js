@@ -207,7 +207,22 @@ export function crearApp(pool) {
     if (typeof cantidades !== 'object' || cantidades === null)
       return respuesta.code(400).send({ error: 'Falta "cantidades".' })
 
-    for (const clave of Object.keys(cantidades)) {
+    /* Un reemplazo sin NINGUNA carta no es un caso de uso: es el síntoma de que el
+       archivo que eligieron no era una copia de la colección. Antes esto contestaba 200
+       y borraba todo — con un `null`, un `[]` o un `{}` alcanzaba, porque el front los
+       convertía en una colección vacía perfectamente válida.
+
+       La guarda va acá, en el servidor, y no sólo en el navegador: es la única que
+       protege aunque el front tenga un bug, y este camino es el único de toda la app que
+       borra en masa. Si alguna vez hace falta un "empezar de cero", que vaya por su
+       propio camino y pidiéndolo a propósito, no de rebote al restaurar. */
+    const claves = Object.keys(cantidades)
+    if (!claves.length)
+      return respuesta.code(400).send({
+        error: 'Esa copia no tiene ninguna carta. No se cambió nada de tu colección.',
+      })
+
+    for (const clave of claves) {
       if (!claveValida(clave))
         return respuesta.code(400).send({ error: `Clave inválida: ${clave}` })
     }

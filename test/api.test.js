@@ -181,6 +181,24 @@ test('reemplazar la colección entera deja sólo lo nuevo', async () => {
   assert.deepEqual(final.json().cantidades, { 'exp-3:300': 2 })
 })
 
+/* EL QUE BORRABA LA COLECCIÓN. Restaurar con un archivo que no era una copia —un null,
+   un [], un {} o un respaldo bajado antes de cargar nada— llegaba acá como un reemplazo
+   de cero cartas, se contestaba 200 y se borraba todo. Sin confirmación y sin aviso. */
+test('un reemplazo sin cartas se rechaza y no toca nada de lo que había', async () => {
+  const token = await registrar('goten@ejemplo.com')
+  await pedir({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 2, estado: 'bien' } })
+  await pedir({ method: 'PUT', url: '/api/cartas/exp-1:2', headers: auth(token), payload: { cantidad: 1, estado: 'perfecta' } })
+
+  for (const cuerpo of [{ estados: {}, cantidades: {} }, { cantidades: {} }]) {
+    const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token), payload: cuerpo })
+    assert.equal(r.statusCode, 400, `tendría que rechazarlo: ${r.body}`)
+  }
+
+  const quedan = await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(Object.keys(quedan.json().cantidades).sort(), ['exp-1:1', 'exp-1:2'])
+  assert.equal(quedan.json().cantidades['exp-1:1'], 2, 'ni siquiera las cantidades cambian')
+})
+
 test('una colección entera de 1936 cartas entra sin romperse', async () => {
   const token = await registrar('angel@ejemplo.com')
   const cantidades = {}
