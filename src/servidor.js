@@ -53,10 +53,20 @@ export function crearApp(pool) {
      dieron 429 igual. Pero el origen es alcanzable directo por el 443, y por ahí sí la
      controlaría el atacante.
 
-     Así que se usa `CF-Connecting-IP`, que la pone Cloudflare y pisa cualquier valor del
-     cliente. Si no está, se cae al socket, que detrás de Traefik es el mismo para todos:
-     eso falla CERRADO — quien le pegue directo al origen comparte un solo balde con
-     todos los demás que hagan lo mismo. */
+     Así que se usa `CF-Connecting-IP`. Por el camino normal no se puede falsificar, y
+     por una razón más fuerte que "Cloudflare la pisa": **Cloudflare rechaza con 403, en
+     el borde, cualquier pedido que traiga una cabecera CF-* puesta por el cliente**. Se
+     comprobó contra producción — doce intentos con CF-Connecting-IP inventada dieron los
+     doce 403 y no llegaron nunca al origen.
+
+     Si no está, se cae al socket, que detrás de Traefik es el mismo para todos: eso falla
+     CERRADO, porque quien le pegue directo al origen sin la cabecera comparte un solo
+     balde con todos los que hagan lo mismo.
+
+     LO QUE ESTO NO CIERRA, para que quede escrito: quien le pegue **directo al origen**
+     por el 443 (que pasa la lista blanca de Dattaweb) y encima se invente la cabecera,
+     sigue estrenando contador. Cerrarlo del todo es de red, no de esta app: que al
+     origen sólo lleguen los rangos de Cloudflare. Está anotado como hallazgo aparte. */
   const ipDe = (pedido) => {
     const cf = pedido.headers['cf-connecting-ip']
     return (typeof cf === 'string' && cf.trim()) || pedido.ip
