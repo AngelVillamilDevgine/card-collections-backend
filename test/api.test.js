@@ -262,7 +262,8 @@ test('el freno cuenta por IP de verdad: una cabecera inventada no estrena contad
       method: 'POST',
       url: '/api/sesion',
       headers: { 'cf-connecting-ip': '10.9.9.1', 'x-forwarded-for': `198.51.100.${i}` },
-      payload: { usuario: `nadie-${i}@ejemplo.com`, clave: 'claveMala1' },
+      // Siempre la MISMA cuenta: el balde que frena es el de (ip, usuario).
+      payload: { usuario: 'nadie@ejemplo.com', clave: 'claveMala1' },
     })
     codigos.push(r.statusCode)
   }
@@ -275,6 +276,79 @@ test('el freno cuenta por IP de verdad: una cabecera inventada no estrena contad
     payload: { usuario: 'nadie@ejemplo.com', clave: 'claveMala1' },
   })
   assert.equal(otra.statusCode, 401, 'el balde no puede ser uno solo para todos')
+})
+
+/* EL BOTON DE REINICIO. El freno contaba todos los intentos por IP y un login bueno
+   borraba el balde entero, asi que al atacante le alcanzaba con registrarse una cuenta
+   propia: diez tiros a la victima, uno bueno a la suya, y a empezar de nuevo. */
+test('entrar a una cuenta propia no le borra el freno a la cuenta atacada', async () => {
+  const VICTIMA = 'victima@ejemplo.com'
+  const ATACANTE = 'atacante@ejemplo.com'
+  await registrar(VICTIMA)
+  await registrar(ATACANTE)
+  const MISMA_IP = { 'cf-connecting-ip': '10.7.7.7' }
+
+  for (let i = 0; i < 11; i++)
+    await pedir({ method: 'POST', url: '/api/sesion', headers: MISMA_IP,
+                  payload: { usuario: VICTIMA, clave: 'noEsLaClave1' } })
+  const frenada = await pedir({ method: 'POST', url: '/api/sesion', headers: MISMA_IP,
+                               payload: { usuario: VICTIMA, clave: 'noEsLaClave1' } })
+  assert.equal(frenada.statusCode, 429, 'tendría que estar frenada')
+
+  const propia = await pedir({ method: 'POST', url: '/api/sesion', headers: MISMA_IP,
+                              payload: { usuario: ATACANTE, clave: 'kamehameha' } })
+  assert.equal(propia.statusCode, 200, `el atacante tiene que poder entrar a la suya: ${propia.body}`)
+
+  const sigue = await pedir({ method: 'POST', url: '/api/sesion', headers: MISMA_IP,
+                             payload: { usuario: VICTIMA, clave: 'noEsLaClave1' } })
+  assert.equal(sigue.statusCode, 429, 'el login bueno le borró el freno a la víctima')
+})
+
+/* El cuerpo del 401 ya era el mismo exista o no el usuario. El tiempo no: al inexistente
+   se le contestaba al instante y al real recién después del scrypt. */
+test('negar a un usuario que no existe cuesta lo mismo que a uno que sí', async () => {
+  await registrar('existe@ejemplo.com')
+  const medir = async (usuario) => {
+    const desde = process.hrtime.bigint()
+    const r = await pedir({ method: 'POST', url: '/api/sesion', payload: { usuario, clave: 'claveIncorrecta1' } })
+    assert.equal(r.statusCode, 401, r.body)
+    return Number(process.hrtime.bigint() - desde) / 1e6
+  }
+  const real = await medir('existe@ejemplo.com')
+  const inexistente = await medir('no-existe@ejemplo.com')
+  // No se mide que sean iguales —eso sería frágil— sino que el inexistente TAMBIÉN
+  // pague un scrypt. Sin el hash de descarte volvía en menos de un milisegundo.
+  assert.ok(inexistente > 15, `el inexistente volvió en ${inexistente.toFixed(1)} ms: no hasheó nada`)
+  assert.ok(real > 15, `el real volvió en ${real.toFixed(1)} ms`)
+})
+
+/* El camino que reemplaza TODO validaba menos que el que cambia una carta sola. */
+test('el reemplazo masivo tampoco acepta cantidades basura', async () => {
+  const token = await registrar('trunks@ejemplo.com')
+  for (const [nombre, cantidades] of [
+    ['negativa', { 'exp-1:1': -3 }],
+    ['decimal', { 'exp-1:1': 1.7 }],
+    ['texto', { 'exp-1:1': 'hola' }],
+    ['enorme', { 'exp-1:1': 999999999 }],
+  ]) {
+    const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
+                            payload: { estados: {}, cantidades } })
+    assert.equal(r.statusCode, 400, `${nombre} tendría que rechazarse: ${r.body}`)
+  }
+  // Y una buena sigue entrando.
+  const bien = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
+                             payload: { estados: { 'exp-1:1': 'bien' }, cantidades: { 'exp-1:1': 2 } } })
+  assert.equal(bien.statusCode, 200, bien.body)
+})
+
+/* Las estadísticas convierten de UTC a -03:00 dando por sentado que el servidor está en
+   UTC, y nada lo garantizaba: dependía de con qué huso levantara el contenedor. */
+test('la sesión de MySQL está en UTC, que es lo que las estadísticas dan por sentado', async () => {
+  const [filas] = await pool.query(
+    'SELECT @@session.time_zone huso, TIMEDIFF(NOW(), UTC_TIMESTAMP()) diferencia'
+  )
+  assert.equal(filas[0].huso, '+00:00', `la sesión dice ${filas[0].huso}`)
+  assert.equal(String(filas[0].diferencia), '00:00:00', 'NOW() tiene que ser UTC')
 })
 
 test('el registro también tiene freno, y no hashea si el usuario ya existe', async () => {

@@ -100,6 +100,34 @@ test('entrar como app queda anotado, y el navegador no lo pisa', async () => {
   assert.equal(resumen.json().usuarios.conApp, 1)
 })
 
+/* Abrir el panel anotaba tu visita del día ANTES de calcular nada, así que inflaba con
+   tus propios chequeos los dos números que el panel existe para mostrar.
+
+   El `?app=1` no es un detalle: la marca en memoria de anotarVisita lleva si vino de la
+   app, así que con él la llave es distinta de la que dejó el registro. Sin eso el test
+   pasaría solo, tapado por el cache, sin probar nada. */
+test('abrir el panel no cuenta como usar la app', async () => {
+  const jefe = await registrar(ADMIN)
+  await pool.query('DELETE FROM visita')
+
+  const r = await app.inject({ method: 'GET', url: '/api/admin/resumen?app=1', headers: auth(jefe) })
+  assert.equal(r.statusCode, 200, r.body)
+  await new Promise((s) => setTimeout(s, 200))
+
+  const [filas] = await pool.query('SELECT COUNT(*) n FROM visita')
+  assert.equal(Number(filas[0].n), 0, 'mirar el panel no puede anotar una visita')
+
+  // Y cualquier otra ruta sí la anota, para que se vea que el test discrimina.
+  await app.inject({ method: 'GET', url: '/api/coleccion?app=1', headers: auth(jefe) })
+  for (let i = 0; i < 40; i++) {
+    const [f] = await pool.query('SELECT COUNT(*) n FROM visita')
+    if (Number(f[0].n) > 0) break
+    await new Promise((s) => setTimeout(s, 25))
+  }
+  const [despues] = await pool.query('SELECT COUNT(*) n FROM visita')
+  assert.equal(Number(despues[0].n), 1, 'una ruta normal sí tiene que anotar')
+})
+
 test('sin sesión tampoco', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/admin/resumen' })
   assert.equal(r.statusCode, 401)

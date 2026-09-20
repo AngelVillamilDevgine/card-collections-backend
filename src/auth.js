@@ -33,6 +33,21 @@ export async function claveCoincide(clave, guardado) {
   return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 
+/* Un hash de descarte contra el que comparar cuando el usuario NO existe, para que
+   negarle cueste lo mismo que negarle a uno real.
+
+   Sin esto, al inexistente se le contesta al instante y al real recién después del
+   scrypt: midiendo el tiempo de respuesta se averigua quién tiene cuenta — que es
+   exactamente lo que el mensaje único ("usuario o clave incorrectos") quiere evitar.
+
+   Se calcula una sola vez, al primer uso. La clave de la que sale es al azar y se tira:
+   a nadie le sirve para nada. */
+let fantasma
+export async function gastarComoSiExistiera(clave) {
+  fantasma ??= await hashearClave(crypto.randomBytes(18).toString('hex'))
+  await claveCoincide(typeof clave === 'string' ? clave : '', fantasma)
+}
+
 export const hashDeToken = (token) =>
   crypto.createHash('sha256').update(token).digest('hex')
 

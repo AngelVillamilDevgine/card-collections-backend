@@ -66,7 +66,7 @@ export function urlDeConexion() {
 
 export function conectar(url = urlDeConexion()) {
   if (!url) throw new Error('Falta DBZ_MYSQL_URL (o DBZ_MYSQL_URL_FILE)')
-  return mysql.createPool({
+  const pool = mysql.createPool({
     uri: url,
     waitForConnections: true,
     connectionLimit: 10,
@@ -76,6 +76,21 @@ export function conectar(url = urlDeConexion()) {
     timezone: 'Z',
     charset: 'utf8mb4_unicode_ci',
   })
+
+  /* Cada conexión dice en qué huso está, y no se da por sentado.
+
+     El SQL de las estadísticas convierte de UTC a -03:00 (`aca()` en estadisticas.js) y
+     la opción `timezone: 'Z'` de arriba NO alcanza: ésa sólo le dice a mysql2 cómo pasar
+     un DATETIME a Date de JavaScript, no ejecuta ningún `SET time_zone`. O sea que todo
+     dependía de con qué huso levantara el contenedor de MySQL.
+
+     Si alguna vez se recreara con otro, las cuentas se correrían tres horas sin que nadie
+     se entere, y las filas de `visita` —que las escribe el JS con hoyAca()— dejarían de
+     alinearse con las que compara el SQL. El número de "cuántos vuelven", que es el que
+     decide sobre la app, se habría inflado solo. */
+  pool.on('connection', (conexion) => conexion.query("SET time_zone = '+00:00'"))
+
+  return pool
 }
 
 export async function prepararEsquema(pool) {

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { conectar, prepararEsquema, borrarVencidas } from './base.js'
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
-  usuarioDeToken, revisarCredenciales, tokenDe,
+  usuarioDeToken, revisarCredenciales, tokenDe, gastarComoSiExistiera,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
 import { anotarVisita, resumen } from './estadisticas.js'
@@ -72,22 +72,50 @@ export function crearApp(pool) {
     return (typeof cf === 'string' && cf.trim()) || pedido.ip
   }
 
-  const intentos = new Map()
-  const TOPE = 10
+  /* El balde cuenta FRACASOS, no intentos, y bajo dos llaves a la vez:
+
+       ip|usuario -> el que le pega a UNA cuenta
+       ip         -> el que prueba la misma clave en muchas cuentas
+
+     Un login bueno perdona sólo la primera; la de la IP no se toca. Antes se contaban
+     todos los intentos y `perdonar` borraba el balde entero de la IP, así que el
+     atacante se registraba una cuenta propia y la usaba de botón de reinicio: diez tiros
+     a la víctima, uno bueno a la suya, y a empezar de nuevo. Eso no lo tapaba ninguna de
+     las otras defensas. */
+  const TOPE_CUENTA = 10      // fracasos contra una misma cuenta
+  const TOPE_IP = 20          // fracasos desde una misma IP, contra las cuentas que sean
+  const TOPE_REGISTROS = 10   // registros desde una misma IP, salgan bien o mal
   const VENTANA = 15 * 60 * 1000
 
-  function frenado(ip) {
-    const previo = intentos.get(ip)
-    if (!previo || Date.now() - previo.desde > VENTANA) {
-      intentos.set(ip, { n: 1, desde: Date.now() })
-      return false
+  /* Cuántos baldes se guardan como mucho. La llave la arma en parte el cliente —la IP y
+     el nombre de usuario que manda—, así que sin tope se puede hacer crecer el Map hasta
+     voltear el proceso, que tiene 256 MB. Cuando se llena se tiran los más viejos y no
+     todos: un `clear()` le daría al atacante justo lo que busca, una forma de borrar los
+     contadores de los demás. */
+  const MAXIMO_BALDES = 5000
+
+  const intentos = new Map()
+
+  function balde(llave) {
+    const previo = intentos.get(llave)
+    if (previo && Date.now() - previo.desde <= VENTANA) return previo
+    if (intentos.size >= MAXIMO_BALDES) {
+      for (const vieja of intentos.keys()) {
+        intentos.delete(vieja)
+        if (intentos.size < MAXIMO_BALDES * 0.9) break
+      }
     }
-    previo.n++
-    return previo.n > TOPE
+    const nuevo = { n: 0, desde: Date.now() }
+    intentos.set(llave, nuevo)
+    return nuevo
   }
-  const perdonar = (ip) => intentos.delete(ip)
+
+  const frenado = (llave, tope) => balde(llave).n >= tope
+  const sumar = (llave) => { balde(llave).n++ }
+  const perdonar = (llave) => intentos.delete(llave)
+
   const reloj = setInterval(() => {
-    for (const [ip, v] of intentos) if (Date.now() - v.desde > VENTANA) intentos.delete(ip)
+    for (const [llave, v] of intentos) if (Date.now() - v.desde > VENTANA) intentos.delete(llave)
   }, VENTANA)
   reloj.unref()
   app.addHook('onClose', () => clearInterval(reloj))
@@ -100,7 +128,12 @@ export function crearApp(pool) {
     pedido.usuario = usuario
     // `?app=1` lo manda el front cuando corre como app instalada. Va en la dirección y
     // no en una cabecera para no obligar a un pedido de permiso previo.
-    anotarVisita(pool, usuario.id, pedido.query?.app === '1') // una vez por día, sin esperarla
+    /* Abrir el panel de números NO cuenta como usar la app: se anotaba tu visita del
+       día ANTES de calcular nada, así que "la usaron hoy" y tu propia retención se
+       inflaban con tus propios chequeos. Con 28 cuentas, mirar el panel todos los días
+       era una parte medible del número que el panel existe para mostrar. */
+    if (pedido.routeOptions?.url !== '/api/admin/resumen')
+      anotarVisita(pool, usuario.id, pedido.query?.app === '1') // una vez por día, sin esperarla
   }
 
   app.post('/api/registro', async (pedido, respuesta) => {
@@ -109,8 +142,11 @@ export function crearApp(pool) {
        saturaba el threadpool y frenaba TODA la API, incluido /api/salud: con el
        healthcheck en rojo, Docker mata y reinicia la tarea. Y de paso llenaba la tabla
        de cuentas basura. */
-    if (frenado(ipDe(pedido)))
+    const llave = `reg|${ipDe(pedido)}`
+    if (frenado(llave, TOPE_REGISTROS))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
+    // Cuentan todos, salgan bien o mal: lo que se limita acá es crear cuentas.
+    sumar(llave)
 
     const { usuario, clave } = pedido.body ?? {}
     const mal = revisarCredenciales(usuario, clave)
@@ -144,10 +180,15 @@ export function crearApp(pool) {
   })
 
   app.post('/api/sesion', async (pedido, respuesta) => {
-    if (frenado(ipDe(pedido)))
+    const ip = ipDe(pedido)
+    const { usuario, clave } = pedido.body ?? {}
+    // Minúsculas porque la colación de la base tampoco distingue: si no, cambiando una
+    // mayúscula se estrenaría contador contra la misma cuenta.
+    const suya = `${ip}|${typeof usuario === 'string' ? usuario.toLowerCase() : ''}`
+
+    if (frenado(suya, TOPE_CUENTA) || frenado(ip, TOPE_IP))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
 
-    const { usuario, clave } = pedido.body ?? {}
     let fila = null
     if (typeof usuario === 'string') {
       const [filas] = await pool.query(
@@ -158,11 +199,25 @@ export function crearApp(pool) {
 
     // El mismo mensaje exista o no el usuario: si no, se puede averiguar quién está
     // registrado probando nombres.
-    const negar = () => respuesta.code(401).send({ error: 'Usuario o clave incorrectos.' })
-    if (!fila || typeof clave !== 'string') return negar()
+    const negar = () => {
+      sumar(suya)
+      sumar(ip)
+      return respuesta.code(401).send({ error: 'Usuario o clave incorrectos.' })
+    }
+
+    /* Si el usuario no existe se gasta igual un scrypt contra un hash de descarte. Sin
+       eso, negarle a uno inexistente vuelve al instante y a uno real recién después del
+       hash: midiendo el tiempo se arma la lista de quién tiene cuenta, que es justo lo
+       que el mensaje único intenta evitar. */
+    if (!fila || typeof clave !== 'string') {
+      await gastarComoSiExistiera(clave)
+      return negar()
+    }
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
-    perdonar(ipDe(pedido))
+    // Sólo el balde de ESTA cuenta. El de la IP no se toca: si no, entrar a una cuenta
+    // propia serviría de botón de reinicio para seguir probando contra las ajenas.
+    perdonar(suya)
     anotarVisita(pool, fila.id, pedido.query?.app === '1')
     return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
   })
@@ -225,6 +280,13 @@ export function crearApp(pool) {
     for (const clave of claves) {
       if (!claveValida(clave))
         return respuesta.code(400).send({ error: `Clave inválida: ${clave}` })
+      /* Las cantidades se validan igual que en el PUT de una carta sola. Antes este
+         camino —el que reemplaza TODO— sólo hacía Number(n) y filtraba n > 0: un -3 o
+         un "hola" desaparecían sin decir nada, un 1.7 se redondeaba y un 999999999 se
+         pasaba del SMALLINT y salía por un 500 que no explicaba nada. El camino
+         peligroso validaba menos que el seguro. */
+      const malaCarta = revisarCarta({ cantidad: cantidades[clave], estado: estados?.[clave] ?? null })
+      if (malaCarta) return respuesta.code(400).send({ error: `${clave}: ${malaCarta}` })
     }
     return { cartas: await reemplazar(pool, pedido.usuario.id, { estados, cantidades }) }
   })
