@@ -128,6 +128,24 @@ test('abrir el panel no cuenta como usar la app', async () => {
   assert.equal(Number(despues[0].n), 1, 'una ruta normal sí tiene que anotar')
 })
 
+/* El respaldo y el despliegue corren fuera de la app y, cuando fallan, no se entera
+   nadie: el correo del servidor rebota antes de llegar a Gmail. Anotan en la base y el
+   panel lo muestra, así que el resumen tiene que traerlo. */
+test('el resumen trae la salud de lo que corre afuera', async () => {
+  const jefe = await registrar(ADMIN)
+  await pool.query(
+    "INSERT INTO salud (clave, valor) VALUES ('respaldo', '{\"bytes\":20349,\"copias\":3}')" +
+    ' ON DUPLICATE KEY UPDATE valor = VALUES(valor)'
+  )
+  const r = await app.inject({ method: 'GET', url: '/api/admin/resumen', headers: auth(jefe) })
+  assert.equal(r.statusCode, 200, r.body)
+  const { salud } = r.json()
+  assert.ok(salud, 'el resumen tendría que traer salud')
+  assert.equal(salud.respaldo.valor.bytes, 20349)
+  assert.equal(salud.respaldo.valor.copias, 3)
+  assert.ok(Number.isFinite(salud.respaldo.hace), 'y cuántos minutos hace')
+})
+
 test('sin sesión tampoco', async () => {
   const r = await app.inject({ method: 'GET', url: '/api/admin/resumen' })
   assert.equal(r.statusCode, 401)

@@ -20,6 +20,10 @@ const DIRECCION = process.env.DBZ_DIRECCION ?? '0.0.0.0'
 // pedirle a esta API. Sin esto el navegador corta el pedido.
 /* Quién ve las estadísticas. Por variable y no por una columna en la base: hay un solo
    admin, y así se saca a alguien sin tocar datos. */
+/* Cuántas cartas se aceptan como mucho en un reemplazo. El catálogo son 1936; el margen
+   deja lugar para una expansión nueva sin tener que tocar esto. */
+const TOPE_CARTAS = 2200
+
 const ADMINS = (process.env.DBZ_ADMINS ?? '')
   .split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)
 
@@ -272,6 +276,17 @@ export function crearApp(pool) {
        borra en masa. Si alguna vez hace falta un "empezar de cero", que vaya por su
        propio camino y pidiéndolo a propósito, no de rebote al restaurar. */
     const claves = Object.keys(cantidades)
+
+    /* Tope de filas. Con el `bodyLimit` de 2 MB entran más de 139.000 claves de formato
+       válido en un solo pedido, y no había NADA que lo impidiera: una cuenta gratuita
+       —el registro es abierto— podía dejar millones de filas en el MySQL que comparten
+       los proyectos de clientes. El límite de CPU del contenedor no protege de eso,
+       porque el trabajo lo hace el MySQL, que está fuera del swarm y sin límites. */
+    if (claves.length > TOPE_CARTAS)
+      return respuesta.code(400).send({
+        error: `Son demasiadas cartas: ${claves.length}. La colección entera son 1936.`,
+      })
+
     if (!claves.length)
       return respuesta.code(400).send({
         error: 'Esa copia no tiene ninguna carta. No se cambió nada de tu colección.',

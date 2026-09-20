@@ -19,7 +19,31 @@ ESTADO=/var/lib/dbz-despliegue
 DISCO_MINIMO_MB=3072
 
 decir() { echo "[despliegue] $*"; }
+
+# Deja anotado en la base cómo le fue, para que el panel de números lo muestre. Cuando
+# esto falla no se entera nadie: el correo del servidor no sale (rebota antes de llegar a
+# Gmail), y nadie mira /var/lib/dbz-despliegue. La base sí la ven los dos lados.
+# Es best-effort: si no puede anotar, no se cae el despliegue por eso.
+anotar() {
+  local cnf=/etc/dbz-respaldo.cnf
+  [ -r "$cnf" ] || return 0
+  local m
+  m=$(docker ps --filter name=mysql --format '{{.Names}}' | head -1) || return 0
+  [ -n "$m" ] || return 0
+  docker exec -i "$m" mysql --defaults-extra-file=/dev/stdin dbz_cromeros <<SQL > /dev/null 2>&1 || true
+$(cat "$cnf")
+INSERT INTO salud (clave, valor) VALUES ('despliegue', '$1')
+  ON DUPLICATE KEY UPDATE valor = VALUES(valor), actualizado = CURRENT_TIMESTAMP;
+SQL
+}
+
 mkdir -p "$ESTADO"
+
+# Un commit descartado no se reintenta nunca más. Eso está bien para los tests en rojo
+# —no se van a poner verdes solos— pero no para un fallo PASAJERO: un `npm ci` con el
+# registry lento dejaba los despliegues congelados en silencio, y para siempre, porque
+# nadie mira este archivo. A las 24 horas se olvida y se vuelve a intentar.
+find "$ESTADO" -maxdepth 1 -name 'descartado-*' -mmin +1440 -print -delete 2>/dev/null   | while read -r viejo; do decir "olvido $(basename "$viejo"): hace más de un día que se descartó"; done
 
 # La imagen de una spec, sin el @sha256:… que el swarm a veces le pega al final.
 imagen_de() {
@@ -59,6 +83,7 @@ if [ "$RESULTADO" != "success" ]; then
   # Se anota para no repetir el aviso cada dos minutos hasta el próximo commit.
   decir "los tests de $CORTO dieron '$RESULTADO': no se despliega"
   touch "$ESTADO/descartado-$CORTO"
+  anotar "{\"estado\":\"descartado\",\"commit\":\"$CORTO\"}"
   exit 0
 fi
 
@@ -90,6 +115,7 @@ if ! docker build -t "$IMAGEN:$CORTO" "$TRABAJO" > "$TRABAJO/build.log" 2>&1; th
   decir "no construyó; se descarta $CORTO. Últimas líneas:"
   tail -20 "$TRABAJO/build.log"
   touch "$ESTADO/descartado-$CORTO"
+  anotar "{\"estado\":\"descartado\",\"commit\":\"$CORTO\"}"
   exit 1
 fi
 
@@ -119,10 +145,12 @@ if [ "$QUEDO" != "$IMAGEN:$CORTO" ] || [ "$EST" != "completed" ]; then
   decir "NO quedó (estado: ${EST:-?}); el servicio sigue con $QUEDO"
   docker service ps "$SERVICIO" --format '  {{.CurrentState}} | {{.Image}} | {{.Error}}' | head -4
   touch "$ESTADO/descartado-$CORTO"
+  anotar "{\"estado\":\"descartado\",\"commit\":\"$CORTO\"}"
   docker image rm "$IMAGEN:$CORTO" > /dev/null 2>&1 || true
   exit 1
 fi
 decir "desplegado $CORTO"
+anotar "{\"estado\":\"ok\",\"commit\":\"$CORTO\"}"
 
 # --- 4. Limpiar ---------------------------------------------------------------------
 # Sólo imágenes de este proyecto, y queda la anterior: sin ella no hay rollback.

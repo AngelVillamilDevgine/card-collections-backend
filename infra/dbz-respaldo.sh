@@ -83,6 +83,16 @@ fi
 QUEDAN=$(find "$DESTINO" -maxdepth 1 -name "$BASE-*.sql.gz" | wc -l)
 decir "quedan $QUEDAN copias, $(du -sh "$DESTINO" | cut -f1) en total"
 
+# Se deja anotado EN LA BASE que la copia salió bien, para que el panel de números lo
+# muestre. Es el único canal que llega a los dos lados: el correo del servidor no sale
+# (rebota antes de llegar a Gmail). Si esto deja de correr, la fecha se pone vieja sola
+# y eso mismo es el aviso.
+docker exec -i "$MYSQL" mysql --defaults-extra-file=/dev/stdin "$BASE" <<SQL 2>/dev/null || decir "no pude anotar la salud (la copia igual está)"
+$(cat "$CREDENCIALES")
+INSERT INTO salud (clave, valor) VALUES ('respaldo', '{"bytes":$TAMANO,"copias":$QUEDAN}')
+  ON DUPLICATE KEY UPDATE valor = VALUES(valor), actualizado = CURRENT_TIMESTAMP;
+SQL
+
 # ----------------------------------------------------------------------------------
 # RESTAURAR
 #

@@ -343,6 +343,20 @@ test('el reemplazo masivo tampoco acepta cantidades basura', async () => {
 
 /* Las estadísticas convierten de UTC a -03:00 dando por sentado que el servidor está en
    UTC, y nada lo garantizaba: dependía de con qué huso levantara el contenedor. */
+/* Con el bodyLimit de 2 MB entran mas de 139.000 claves de formato valido en un solo
+   pedido, y no habia nada que lo impidiera: una cuenta podia dejar millones de filas en
+   el MySQL que comparten los proyectos de clientes. */
+test('un reemplazo con muchas más cartas que el catálogo se rechaza', async () => {
+  const token = await registrar('bulma@ejemplo.com')
+  const cantidades = {}
+  for (let n = 1; n <= 3000; n++) cantidades[`exp-1:${n}`] = 1
+  const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
+                          payload: { estados: {}, cantidades } })
+  assert.equal(r.statusCode, 400, r.body)
+  assert.match(r.json().error, /demasiadas/i)
+  // Que 1936 —la colección entera— siga entrando lo cubre el test de más abajo.
+})
+
 test('la sesión de MySQL está en UTC, que es lo que las estadísticas dan por sentado', async () => {
   const [filas] = await pool.query(
     'SELECT @@session.time_zone huso, TIMEDIFF(NOW(), UTC_TIMESTAMP()) diferencia'

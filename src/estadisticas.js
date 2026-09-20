@@ -48,6 +48,26 @@ export function anotarVisita(pool, usuarioId, esApp = false) {
     .catch(() => anotados.delete(usuarioId))
 }
 
+/* Lo que escriben el respaldo y el despliegue, que corren fuera de la app. Se devuelve
+   crudo con su fecha: quién decide si "hace tres días" es un problema es el panel, no
+   esto. */
+async function salud(pool) {
+  const [filas] = await pool.query(
+    `SELECT clave, valor,
+            DATE_FORMAT(${aca('actualizado')}, '%Y-%m-%d %H:%i') actualizado,
+            TIMESTAMPDIFF(MINUTE, actualizado, UTC_TIMESTAMP()) hace
+       FROM salud`
+  )
+  const salida = {}
+  for (const f of filas) {
+    let valor = f.valor
+    try { valor = JSON.parse(f.valor) } catch { /* si no es json, va el texto */ }
+    // `hace` en minutos: que el panel no tenga que hacer cuentas con husos.
+    salida[f.clave] = { valor, actualizado: f.actualizado, hace: Number(f.hace) }
+  }
+  return salida
+}
+
 export async function resumen(pool) {
   const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp] =
     await Promise.all([
@@ -102,6 +122,7 @@ export async function resumen(pool) {
   )
 
   return {
+    salud: await salud(pool),
     total: TOTAL_CARTAS,
     usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp },
     cartas: { total: cartas, repetidas },

@@ -34,6 +34,18 @@ const TABLAS = [
   // Un día en que el usuario usó la app. Sirve para lo único que importa saber:
   // cuántos vuelven. Antes se miraba `sesion`, pero una sesión dura 30 días, así que
   // el que entra una vez y la usa todos los días figuraba como que no volvió nunca.
+  /* Cómo le fue a lo que corre FUERA de la app: el respaldo diario y el despliegue.
+     Esos dos viven en el servidor, no acá, y cuando fallan no se entera nadie — el
+     correo del VPS no llega a Gmail (probado: rebota), así que no hay a dónde avisar.
+     La base sí la ven los dos lados, así que se usa de canal: ellos escriben acá y el
+     panel de números lo muestra. Si algo deja de correr, la fecha se pone vieja sola y
+     eso mismo es el aviso. */
+  `CREATE TABLE IF NOT EXISTS salud (
+     clave       VARCHAR(40) NOT NULL PRIMARY KEY,
+     valor       TEXT        NOT NULL,
+     actualizado TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+   ) ${COLACION}`,
+
   `CREATE TABLE IF NOT EXISTS visita (
      usuario_id INT UNSIGNED NOT NULL,
      dia        DATE         NOT NULL,
