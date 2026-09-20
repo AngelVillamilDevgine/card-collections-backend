@@ -87,11 +87,16 @@ decir "quedan $QUEDAN copias, $(du -sh "$DESTINO" | cut -f1) en total"
 # muestre. Es el único canal que llega a los dos lados: el correo del servidor no sale
 # (rebota antes de llegar a Gmail). Si esto deja de correr, la fecha se pone vieja sola
 # y eso mismo es el aviso.
-docker exec -i "$MYSQL" mysql --defaults-extra-file=/dev/stdin "$BASE" <<SQL 2>/dev/null || decir "no pude anotar la salud (la copia igual está)"
-$(cat "$CREDENCIALES")
+# La clave va por MYSQL_PWD y no por --defaults-extra-file: ese lee TODA la entrada
+# estándar como configuración, así que el SQL que viene después se le mezclaría. Y
+# `-e MYSQL_PWD` sin valor la toma del entorno, así que tampoco aparece en `ps`.
+USUARIO_BASE=$(sed -n 's/^user=//p' "$CREDENCIALES")
+export MYSQL_PWD=$(sed -n 's/^password=//p' "$CREDENCIALES")
+docker exec -i -e MYSQL_PWD "$MYSQL" mysql -u"$USUARIO_BASE" "$BASE" <<SQL 2>/dev/null   || decir "no pude anotar la salud (la copia igual está)"
 INSERT INTO salud (clave, valor) VALUES ('respaldo', '{"bytes":$TAMANO,"copias":$QUEDAN}')
   ON DUPLICATE KEY UPDATE valor = VALUES(valor), actualizado = CURRENT_TIMESTAMP;
 SQL
+unset MYSQL_PWD
 
 # ----------------------------------------------------------------------------------
 # RESTAURAR

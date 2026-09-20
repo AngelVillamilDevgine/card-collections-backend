@@ -30,8 +30,12 @@ anotar() {
   local m
   m=$(docker ps --filter name=mysql --format '{{.Names}}' | head -1) || return 0
   [ -n "$m" ] || return 0
-  docker exec -i "$m" mysql --defaults-extra-file=/dev/stdin dbz_cromeros <<SQL > /dev/null 2>&1 || true
-$(cat "$cnf")
+  # La clave va por MYSQL_PWD y no por --defaults-extra-file: ese lee TODA la entrada
+  # estándar como configuración, así que el SQL que viene después se le mezclaría. Y
+  # `-e MYSQL_PWD` sin valor la toma del entorno, así que tampoco aparece en `ps`.
+  local u
+  u=$(sed -n 's/^user=//p' "$cnf")
+  MYSQL_PWD=$(sed -n 's/^password=//p' "$cnf")   docker exec -i -e MYSQL_PWD "$m" mysql -u"$u" dbz_cromeros <<SQL > /dev/null 2>&1 || true
 INSERT INTO salud (clave, valor) VALUES ('despliegue', '$1')
   ON DUPLICATE KEY UPDATE valor = VALUES(valor), actualizado = CURRENT_TIMESTAMP;
 SQL
