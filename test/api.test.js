@@ -9,6 +9,8 @@ import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { conectar, prepararEsquema } from '../src/base.js'
 import { crearApp } from '../src/servidor.js'
+import { olvidarVisitas } from '../src/estadisticas.js'
+import { reemplazar } from '../src/coleccion.js'
 
 const URL = process.env.DBZ_MYSQL_URL_TEST
   ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
@@ -28,9 +30,18 @@ after(async () => {
   await pool?.end()
 })
 
-// Cada test arranca con la base vacía, o los contadores del anterior se le mezclan.
-// Borrar usuario alcanza: carta y sesion caen por ON DELETE CASCADE.
-beforeEach(async () => { await pool.query('DELETE FROM usuario') })
+/* Cada test arranca con la base vacía, o los contadores del anterior se le mezclan.
+   Borrar usuario alcanza: carta y sesion caen por ON DELETE CASCADE.
+
+   Y se vacía también el Map de visitas anotadas, que es de módulo y sobrevive al DELETE.
+   Hoy no haría falta —el AUTO_INCREMENT no se reinicia, así que cada usuario nuevo
+   estrena id—, pero eso es una casualidad: el día que este DELETE pase a ser un TRUNCATE
+   el usuario 1 se encontraría su propia marca del test anterior, la visita no se
+   anotaría nunca y el test se colgaría esperándola. */
+beforeEach(async () => {
+  await pool.query('DELETE FROM usuario')
+  olvidarVisitas()
+})
 
 /* Cada pedido de los tests sale con su propia IP, salvo que el test diga otra cosa: el
    freno a la fuerza bruta es por IP y el balde vive en el `app`, que es uno solo para
@@ -395,4 +406,106 @@ test('la sesión dura 30 días y no más', async () => {
   assert.equal(filas.length, 1, 'debería haber una sola sesión recién creada')
   // Un día de margen: la cuenta la hace MySQL con su propio reloj.
   assert.ok(Math.abs(filas[0].dias - 30) <= 1, `la sesión duró ${filas[0].dias} días`)
+})
+
+/* #79. Lo único que se probaba de la sesión era su FECHA de vencimiento, que es como
+   probar que el candado dice 30 en la etiqueta sin probar que se cierra. Acá se vence
+   una de verdad, en la base, y se mira qué contesta el servidor: un 401, que es lo que
+   el front usa para mandarte a entrar de nuevo en vez de dejarte marcando al vacío. */
+test('una sesión vencida no sirve, aunque el token exista', async () => {
+  const token = await registrar('vegeta@ejemplo.com')
+  const antes = await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.equal(antes.statusCode, 200, 'recién sacada tiene que servir')
+
+  // Se la vence a mano: un día para atrás alcanza y no depende del reloj del test.
+  await pool.query('UPDATE sesion SET vence = NOW() - INTERVAL 1 DAY')
+
+  for (const url of ['/api/coleccion', '/api/yo']) {
+    const r = await pedir({ method: 'GET', url, headers: auth(token) })
+    assert.equal(r.statusCode, 401, `${url} tendría que dar 401: ${r.body}`)
+  }
+  const escribir = await pedir({
+    method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 1 },
+  })
+  assert.equal(escribir.statusCode, 401, 'y tampoco tiene que dejar escribir')
+})
+
+/* #77. `reemplazar` corre en transacción justamente para que un reemplazo a medias no
+   exista: o entra toda la colección nueva, o queda intacta la vieja. Nada lo probaba, y
+   es el único camino de la app que borra en masa — si la transacción se rompiera, el
+   DELETE ya habría pasado y te quedarías sin nada.
+
+   Se fuerza el fallo con una clave más larga que la columna, que revienta en el INSERT
+   de la segunda tanda, DESPUÉS del DELETE. */
+test('si el reemplazo falla a mitad de camino, la colección de antes queda entera', async () => {
+  const token = await registrar('piccolo@ejemplo.com')
+  const [[fila]] = await pool.query('SELECT id FROM usuario WHERE usuario = ?', ['piccolo@ejemplo.com'])
+
+  for (const [clave, cantidad] of [['exp-1:1', 3], ['exp-1:2', 1], ['exp-2:7', 2]]) {
+    await pedir({ method: 'PUT', url: `/api/cartas/${clave}`, headers: auth(token), payload: { cantidad, estado: 'bien' } })
+  }
+
+  const cantidades = { 'exp-9:1': 1 }
+  cantidades['x'.repeat(60) + ':1'] = 1   // no entra en VARCHAR(40): el INSERT falla
+  await assert.rejects(
+    () => reemplazar(pool, fila.id, { estados: {}, cantidades }),
+    'el reemplazo tiene que fallar, si no el test no prueba nada'
+  )
+
+  const quedan = await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(Object.keys(quedan.json().cantidades).sort(), ['exp-1:1', 'exp-1:2', 'exp-2:7'],
+    'tiene que quedar la colección de antes, no un pedazo de la nueva')
+  assert.equal(quedan.json().cantidades['exp-1:1'], 3, 'y con sus cantidades intactas')
+})
+
+/* #57. `{ estados = {} }` en la firma sólo salta con undefined, no con null, y entonces
+   `estados[clave]` reventaba con un 500 sin explicación. Un `estados: null` es lo que
+   deja una copia vieja o un archivo armado a mano. */
+test('un reemplazo con estados en null se guarda igual, sin reventar', async () => {
+  const token = await registrar('krilin@ejemplo.com')
+  const r = await pedir({
+    method: 'PUT', url: '/api/coleccion', headers: auth(token),
+    payload: { estados: null, cantidades: { 'exp-1:1': 2, 'exp-1:2': 1 } },
+  })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.equal(r.json().cartas, 2)
+  const quedan = await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.equal(quedan.json().cantidades['exp-1:1'], 2)
+  assert.deepEqual(quedan.json().estados, {}, 'sin estados, pero con las cartas')
+})
+
+/* #56. La clave se validaba hasta 46 caracteres y la columna es VARCHAR(40): pasaba la
+   validación y moría en el INSERT con un 500. */
+test('una clave más larga que la columna se rechaza con 400, no con un 500', async () => {
+  const token = await registrar('yamcha@ejemplo.com')
+  /* 40 caracteres antes del ':' y 42 en total. El número importa: con 41 el regex viejo
+     ya lo rechazaba y el test no probaba nada. Con 40 PASABA la validación vieja y moría
+     en el INSERT contra VARCHAR(40), que es exactamente el agujero. */
+  const larga = 'a'.repeat(40) + ':1'
+  const r = await pedir({
+    method: 'PUT', url: `/api/cartas/${larga}`, headers: auth(token), payload: { cantidad: 1 },
+  })
+  assert.equal(r.statusCode, 400, `tendría que ser 400 y fue ${r.statusCode}: ${r.body}`)
+
+  const masivo = await pedir({
+    method: 'PUT', url: '/api/coleccion', headers: auth(token),
+    payload: { estados: {}, cantidades: { [larga]: 1 } },
+  })
+  assert.equal(masivo.statusCode, 400, `y por el camino masivo también: ${masivo.body}`)
+
+  // Y la clave más larga que el catálogo usa de verdad sigue entrando.
+  const real = await pedir({
+    method: 'PUT', url: '/api/cartas/especial-gt:1936', headers: auth(token), payload: { cantidad: 1 },
+  })
+  assert.equal(real.statusCode, 204, real.body)   // guardar una carta contesta 204, sin cuerpo
+
+  // Y el borde exacto del tope nuevo: 34 + ':' + 5 dígitos = 40, que es la columna justa.
+  const justa = await pedir({
+    method: 'PUT', url: `/api/cartas/${'b'.repeat(34)}:12345`, headers: auth(token), payload: { cantidad: 1 },
+  })
+  assert.equal(justa.statusCode, 204, `40 justos tienen que entrar: ${justa.body}`)
+  const unaMas = await pedir({
+    method: 'PUT', url: `/api/cartas/${'b'.repeat(35)}:12345`, headers: auth(token), payload: { cantidad: 1 },
+  })
+  assert.equal(unaMas.statusCode, 400, 'y uno más, no')
 })

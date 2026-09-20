@@ -3,6 +3,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { conectar, prepararEsquema } from '../src/base.js'
+import { olvidarVisitas, hoyAca } from '../src/estadisticas.js'
 
 const URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
 const ADMIN = 'jefe@ejemplo.com'
@@ -27,7 +28,12 @@ after(async () => {
   await pool?.end()
 })
 
-beforeEach(async () => { await pool.query('DELETE FROM usuario') })
+/* Se vacía también el Map de visitas, que es de módulo y sobrevive al DELETE. Ver la
+   nota larga en api.test.js: hoy no haría falta, pero deja de ser una trampa. */
+beforeEach(async () => {
+  await pool.query('DELETE FROM usuario')
+  olvidarVisitas()
+})
 
 /* Una IP por registro: el freno a la fuerza bruta es por IP y el balde vive en el
    `app`, que es uno solo para todo el archivo. Ahora que el registro también frena, sin
@@ -186,4 +192,95 @@ test('el admin ve los números, y cuadran con lo que hay', async () => {
   assert.equal(elOtro.cartas, 0)
   // El que más tiene va primero: es la lista que se mira para decidir.
   assert.equal(d.gente[0].usuario, ADMIN)
+})
+
+/* #81. `volvieron` es EL número del panel: la pregunta no es cuánta gente entra sino
+   cuánta vuelve. Es además el que ya estuvo mal una vez —se contaba con `sesion`, que
+   dura 30 días, y el que entraba una vez y usaba la app todos los días figuraba como
+   que no había vuelto nunca— y aun así no tenía ningún test. Acá se siembran visitas a
+   mano, que es la única forma de tener días distintos sin esperar a mañana. */
+test('volvieron cuenta días distintos, no sesiones ni pedidos', async () => {
+  const jefe = await registrar(ADMIN)
+  const vuelve = await registrar('vuelve@ejemplo.com')
+  const unaVez = await registrar('unavez@ejemplo.com')
+  assert.ok(vuelve && unaVez)
+
+  const ids = {}
+  const [filas] = await pool.query('SELECT id, usuario FROM usuario')
+  for (const f of filas) ids[f.usuario] = f.id
+
+  await pool.query('DELETE FROM visita')
+  const hoy = hoyAca()
+  await pool.query(
+    'INSERT INTO visita (usuario_id, dia) VALUES (?, ?), (?, DATE_SUB(?, INTERVAL 1 DAY)), (?, ?)',
+    [ids['vuelve@ejemplo.com'], hoy, ids['vuelve@ejemplo.com'], hoy, ids['unavez@ejemplo.com'], hoy]
+  )
+  // Y muchos pedidos del mismo día NO tienen que sumar: es el error que tuvo el panel.
+  for (let i = 0; i < 5; i++)
+    await app.inject({ method: 'GET', url: '/api/coleccion', headers: auth(unaVez) })
+
+  const r = await app.inject({ method: 'GET', url: '/api/admin/resumen', headers: auth(jefe) })
+  assert.equal(r.statusCode, 200, r.body)
+  const d = r.json()
+  assert.equal(d.usuarios.volvieron, 1, 'sólo uno entró en dos días distintos')
+
+  const elQueVuelve = d.gente.find((g) => g.usuario === 'vuelve@ejemplo.com')
+  assert.equal(elQueVuelve.dias, 2, 'y su columna de días tiene que decir 2')
+  assert.equal(d.gente.find((g) => g.usuario === 'unavez@ejemplo.com').dias, 1)
+})
+
+/* #60. El total del catálogo era un 1936 escrito a mano acá adentro, y el catálogo vive
+   en el front y se edita sin recompilar. Ya no se manda: que el panel lo saque de donde
+   está la verdad. Si alguien lo vuelve a agregar, que este test lo frene. */
+test('el resumen ya no manda el tamaño del catálogo, que no es suyo', async () => {
+  const jefe = await registrar(ADMIN)
+  const r = await app.inject({ method: 'GET', url: '/api/admin/resumen', headers: auth(jefe) })
+  assert.equal(r.json().total, undefined, 'el catálogo lo conoce el front, no el servidor')
+})
+
+/* #61. `altas7` contaba con una ventana RODANTE de UTC (`creado > NOW() - INTERVAL 7
+   DAY`, o sea las últimas 168 horas desde este instante) mientras que el gráfico de al
+   lado agrupa por día de Argentina. Los dos números vivían en el mismo panel y no eran
+   comparables: el día más viejo salía recortado por las horas que ya habían pasado hoy,
+   así que la misma base daba números distintos según la hora a la que miraras.
+
+   Lo que fija este test es justamente eso: con altas sembradas en horas extremas del
+   día local, el resultado tiene que ser el mismo siempre. Las fechas se escriben en hora
+   de Argentina y las convierte MySQL, que es donde vive la cuenta. */
+test('las altas de los últimos 7 días se cuentan por día local, no por ventana rodante', async () => {
+  const jefe = await registrar(ADMIN)
+  await pool.query('DELETE FROM usuario WHERE usuario <> ?', [ADMIN])
+
+  const hoy = hoyAca()
+  const siembra = [
+    ['justo-afuera@ejemplo.com', 7, '23:30:00'],  // último minuto del día que queda afuera
+    ['justo-adentro@ejemplo.com', 6, '00:30:00'], // primer minuto del día que entra
+    ['anteayer@ejemplo.com', 2, '12:00:00'],
+  ]
+  for (const [usuario, hace, hora] of siembra) {
+    await pool.query(
+      `INSERT INTO usuario (usuario, hash, creado)
+       VALUES (?, 'x', CONVERT_TZ(CONCAT(DATE_SUB(?, INTERVAL ? DAY), ' ', ?), '-03:00', '+00:00'))`,
+      [usuario, hoy, hace, hora]
+    )
+  }
+
+  const r = await app.inject({ method: 'GET', url: '/api/admin/resumen', headers: auth(jefe) })
+  assert.equal(r.statusCode, 200, r.body)
+  const d = r.json()
+
+  // El admin se registró recién, así que entra; el de hace 7 días no, aunque sea 23:30.
+  assert.equal(d.usuarios.altas7, 3,
+    'tienen que entrar el admin, el de hace 6 días y el de hace 2 — y NO el de hace 7')
+
+  // Y el gráfico tiene que cuadrar con ese número: los dos miden días locales.
+  const desde = new Date(`${hoy}T00:00:00Z`)
+  desde.setUTCDate(desde.getUTCDate() - 6)
+  const corte = desde.toISOString().slice(0, 10)
+  const enLosSiete = d.porDia.filter((x) => x.dia >= corte).reduce((a, x) => a + x.cuantos, 0)
+  assert.equal(enLosSiete, d.usuarios.altas7,
+    'el gráfico y el contador tienen que dar lo mismo: antes usaban ventanas distintas')
+
+  // El de hace 7 días existe, pero cae fuera de la ventana: no es que se haya perdido.
+  assert.equal(d.usuarios.total, 4)
 })

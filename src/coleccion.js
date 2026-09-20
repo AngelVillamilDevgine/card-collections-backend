@@ -35,7 +35,15 @@ export async function guardarCarta(pool, usuarioId, clave, cantidad, estado) {
 }
 
 /* La colección entera de una. La usa "Restaurar una copia" y la importación. */
-export async function reemplazar(pool, usuarioId, { estados = {}, cantidades = {} }) {
+export async function reemplazar(pool, usuarioId, cuerpo) {
+  /* A mano y no con valores por defecto en la firma: `{ estados = {} }` sólo salta con
+     `undefined`, no con `null`. Un `{"estados": null, "cantidades": {...}}` —que es lo
+     que deja una copia vieja o un archivo armado a mano— llegaba hasta `estados[clave]`
+     y reventaba con un 500 sin explicación. */
+  const objeto = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
+  const estados = objeto(cuerpo?.estados)
+  const cantidades = objeto(cuerpo?.cantidades)
+
   const conexion = await pool.getConnection()
   try {
     // En transacción: o entra toda, o no entra nada y queda la de antes.
@@ -75,4 +83,11 @@ export function revisarCarta(cuerpo) {
   return null
 }
 
-export const claveValida = (clave) => /^[a-z0-9-]{1,40}:\d{1,5}$/.test(clave)
+/* El tope tiene que cerrar con la columna, que es VARCHAR(40). Con {1,40} antes del
+   ':' la clave entera podía llegar a 46 caracteres: pasaba la validación, el INSERT
+   tiraba ER_DATA_TOO_LONG y salía un 500 con traza en vez de un 400 que explica. Y si
+   el MySQL corriera sin modo estricto sería peor: truncaría, y dos claves distintas
+   colisionarían en la primaria, que es lo que separa la colección de uno de la del otro.
+   34 + ':' + 5 dígitos = 40 justos, y el id de expansión más largo del catálogo tiene
+   once caracteres, así que sobra. */
+export const claveValida = (clave) => /^[a-z0-9-]{1,34}:\d{1,5}$/.test(clave)

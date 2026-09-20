@@ -5,8 +5,6 @@
 // primera vez que pide algo en el día. Cuesta un INSERT por usuario por día, no uno
 // por cada toque de carta.
 
-const TOTAL_CARTAS = 1936 // la colección completa; el front la saca del catálogo
-
 /* El MySQL del servidor corre en UTC y acá son las tres menos: sin esto, todo lo que
    pasa después de las nueve de la noche cuenta como del día siguiente. Argentina no
    mueve la hora desde 2009, así que el -03:00 fijo alcanza y no hace falta que la base
@@ -29,6 +27,14 @@ async function una(pool, sql, args = []) {
 const anotados = new Map()
 
 export const hoyAca = () => new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+/* El Map es de módulo y sobrevive al `DELETE FROM usuario` de los tests. Hoy no rompe
+   porque el AUTO_INCREMENT no se reinicia y cada usuario nuevo estrena id, pero el día
+   que alguien cambie ese DELETE por un TRUNCATE —que sí lo reinicia— el usuario 1 del
+   test siguiente va a encontrar su propia marca del test anterior, la visita no se va a
+   anotar nunca y el test se va a colgar esperándola, con un fallo que no dice nada.
+   Con esto el que prepara la base puede vaciarlo también, y deja de ser una trampa. */
+export const olvidarVisitas = () => anotados.clear()
 
 export function anotarVisita(pool, usuarioId, esApp = false) {
   const hoy = hoyAca()
@@ -75,7 +81,12 @@ export async function resumen(pool) {
       una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM carta'),
       una(pool, 'SELECT COUNT(*) FROM carta'),
       una(pool, 'SELECT COALESCE(SUM(cantidad - 1), 0) FROM carta'),
-      una(pool, 'SELECT COUNT(*) FROM usuario WHERE creado > NOW() - INTERVAL 7 DAY'),
+      /* Por día LOCAL y no por ventana rodante de UTC. `creado > NOW() - INTERVAL 7 DAY`
+         cuenta las últimas 168 horas contadas desde este instante, pero todo lo demás
+         del panel agrupa por día de Argentina: los dos números no eran comparables, y
+         el más viejo salía siempre recortado por las horas que ya habían pasado hoy. */
+      una(pool, `SELECT COUNT(*) FROM usuario
+                  WHERE DATE(${aca('creado')}) > DATE_SUB(?, INTERVAL 7 DAY)`, [hoyAca()]),
       una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) = DATE(${aca('NOW()')})`),
       // Volver otro día es la señal de que la app sirve para algo. Se cuenta con
       // `visita`, no con `sesion`: la sesión dura 30 días, así que el que entra una
@@ -91,8 +102,9 @@ export async function resumen(pool) {
 
   const [porDia] = await pool.query(
     `SELECT DATE_FORMAT(${aca('creado')}, '%Y-%m-%d') dia, COUNT(*) cuantos FROM usuario
-      WHERE creado > NOW() - INTERVAL 14 DAY
-      GROUP BY dia ORDER BY dia`
+      WHERE DATE(${aca('creado')}) > DATE_SUB(?, INTERVAL 14 DAY)
+      GROUP BY dia ORDER BY dia`,
+    [hoyAca()]
   )
 
   const [tramos] = await pool.query(
@@ -123,7 +135,12 @@ export async function resumen(pool) {
 
   return {
     salud: await salud(pool),
-    total: TOTAL_CARTAS,
+    /* Acá había un `total: 1936` escrito a mano, que es el tamaño del catálogo. El
+       catálogo vive en el front y se edita sin recompilar nada, así que el día que
+       cambiara, el panel iba a seguir calculando los porcentajes de la columna «Álbum»
+       contra un número viejo — mintiendo en silencio, porque ningún test puede ver los
+       dos lados. Ahora el front usa el total que ya calcula del catálogo que tiene
+       cargado, y este número no existe más. */
     usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp },
     cartas: { total: cartas, repetidas },
     porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
