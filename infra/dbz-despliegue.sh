@@ -17,6 +17,15 @@ ESTADO=/var/lib/dbz-despliegue
 # `df -BG` redondea para ARRIBA: con 8.2G libres dice 9G, y el margen real quedaba
 # hasta un giga por debajo de lo que uno cree estar exigiendo.
 DISCO_MINIMO_MB=3072
+# Cuántas vueltas de 3 s se espera a que el swarm se asiente antes de decidir.
+#
+# El techo eran 60 s y los deploys reales tardan 51, 52, 53 y 55 — el margen era de
+# cinco segundos. Y la cuenta dice que tenía que pasar: con start-first, el healthcheck
+# del Dockerfile (start-period 20 s, hasta 3 intentos cada 15 s) y el `monitor: 30s` del
+# stack, lo normal son entre 55 y 75 segundos. El 2026-09-13 se pasó, y ver más abajo lo
+# que hacía entonces. Cinco minutos no le cuesta nada a nadie: sólo se agotan cuando
+# algo está mal de verdad, y systemd no arranca dos corridas de la misma unidad a la vez.
+VUELTAS_CONVERGENCIA=100
 
 decir() { echo "[despliegue] $*"; }
 
@@ -54,6 +63,13 @@ imagen_de() {
   local v
   v=$(docker service inspect "$SERVICIO" --format "$1" 2>/dev/null) || return 0
   echo "${v%@*}"
+}
+
+# ¿Hay una tarea CORRIENDO con la imagen nueva? Es lo único que no miente cuando el
+# UpdateStatus se queda pensando.
+tarea_viva() {
+  docker service ps "$SERVICIO" --filter desired-state=running       --format '{{.CurrentState}}|{{.Image}}' 2>/dev/null |
+    grep -q "^Running.*|${IMAGEN}:${CORTO}\(@\|$\)"
 }
 
 # --- 1. Qué dice GitHub del último commit ------------------------------------------
@@ -138,19 +154,41 @@ docker service update --image "$IMAGEN:$CORTO" --no-resolve-image \
 # El swarm tarda un momento en pasar de "updating" a "completed". Leerlo de una hace
 # que un deploy bueno parezca fallado, y entonces el commit queda descartado, la unidad
 # sale con error y no se limpian las imágenes viejas. Se espera a que se asiente.
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$VUELTAS_CONVERGENCIA"); do
   EST=$(docker service inspect "$SERVICIO" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}')
   case "$EST" in completed|rollback_completed|paused) break ;; esac
-  sleep 2
+  sleep 3
 done
 QUEDO=$(imagen_de '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
+
+# Que el UpdateStatus siga en "updating" no quiere decir que haya fallado: puede estar
+# lento. Antes de darlo por perdido se mira si la tarea nueva está corriendo.
+#
+# Esto no es una precaución teórica. El 2026-09-13 el script dijo «NO quedó (estado:
+# updating)» y en el renglón siguiente, en su propio diagnóstico, imprimió
+# «Running 30 seconds ago | dbz-cromeros-api:46c0e793cdf4»: el deploy había salido bien
+# y la prueba estaba ahí impresa. La ignoraba.
+if [ "$EST" != "completed" ] && [ "$QUEDO" = "$IMAGEN:$CORTO" ] && tarea_viva; then
+  decir "el swarm todavía dice '${EST:-?}', pero la tarea nueva ya corre: lo doy por bueno"
+  EST=completed
+fi
 
 if [ "$QUEDO" != "$IMAGEN:$CORTO" ] || [ "$EST" != "completed" ]; then
   decir "NO quedó (estado: ${EST:-?}); el servicio sigue con $QUEDO"
   docker service ps "$SERVICIO" --format '  {{.CurrentState}} | {{.Image}} | {{.Error}}' | head -4
   touch "$ESTADO/descartado-$CORTO"
   anotar "{\"estado\":\"descartado\",\"commit\":\"$CORTO\"}"
-  docker image rm "$IMAGEN:$CORTO" > /dev/null 2>&1 || true
+  # NUNCA borrar la imagen a la que apunta la spec del servicio, haya fallado o no.
+  # Esta imagen no está en ningún registry: existe sólo en esta máquina. Borrarle el tag
+  # mientras el servicio la tiene en su spec no rompe nada en el momento —el contenedor
+  # ya está andando y la retiene por id— pero al siguiente reinicio el swarm va a buscar
+  # una imagen que no existe en ninguna parte y la tarea queda rechazada para siempre.
+  # Y nadie se entera hasta ese reinicio, que puede ser días después.
+  if [ "$QUEDO" != "$IMAGEN:$CORTO" ]; then
+    docker image rm "$IMAGEN:$CORTO" > /dev/null 2>&1 || true
+  else
+    decir "no borro $IMAGEN:$CORTO: es la que el servicio tiene puesta"
+  fi
   exit 1
 fi
 decir "desplegado $CORTO"
