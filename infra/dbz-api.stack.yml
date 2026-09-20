@@ -31,6 +31,20 @@ services:
       DBZ_VERSION: ${DBZ_IMAGEN}
       PORT: "8787"
 
+    # Un techo a los logs. El driver json-file, sin opciones, crece SIN LÍMITE, y lo
+    # hace sobre el mismo disco que usa el MySQL que comparten los proyectos de
+    # clientes — que está al 83%. Tres archivos de 10 MB: 30 MB como mucho, siempre.
+    #
+    # El nivel se deja en `info` a propósito, aunque la auditoría sugería bajarlo a
+    # `warn`: con el techo puesto el riesgo de disco ya está cerrado, y lo que se
+    # perdería es justo el registro que sirve para entender qué pasó. El volumen real
+    # es chico — un toque de carta son dos líneas de ~200 bytes, y son 28 usuarios.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     secrets: [dbz_mysql_url]
 
     # El MySQL no es un servicio del swarm: es un contenedor suelto con el 3306

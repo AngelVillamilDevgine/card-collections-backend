@@ -13,6 +13,10 @@ SERVICIO=dbz-api_api
 IMAGEN=dbz-cromeros-api
 CHECK=Tests            # el name del job en .github/workflows/tests.yml
 ESTADO=/var/lib/dbz-despliegue
+# MB libres sin los cuales no se construye (ver abajo). En MB y no en GB porque
+# `df -BG` redondea para ARRIBA: con 8.2G libres dice 9G, y el margen real quedaba
+# hasta un giga por debajo de lo que uno cree estar exigiendo.
+DISCO_MINIMO_MB=3072
 
 decir() { echo "[despliegue] $*"; }
 mkdir -p "$ESTADO"
@@ -60,6 +64,19 @@ fi
 
 # --- 2. Construir -------------------------------------------------------------------
 decir "commit nuevo con los tests en verde: $CORTO (hoy corre $ACTUAL)"
+
+# Con poco disco no se construye, y no es por cuidar este proyecto: un build que llena
+# el disco deja sin poder escribir al MySQL que comparten los proyectos de clientes, y
+# InnoDB con el disco lleno se pone en sólo lectura o se corrompe. La diferencia es
+# entre "hoy no despliego" y "se corrompió la base de un cliente".
+#
+# No se anota como descartado: en cuanto haya lugar, se reintenta solo en la próxima
+# vuelta del timer.
+LIBRE=$(df --output=avail -BM /var/lib/docker | tail -1 | tr -dc '0-9')
+if [ "${LIBRE:-0}" -lt "$DISCO_MINIMO_MB" ]; then
+  decir "quedan ${LIBRE}M libres y hacen falta ${DISCO_MINIMO_MB}M: no construyo. Se reintenta solo."
+  exit 0
+fi
 
 TRABAJO=$(mktemp -d)
 trap 'rm -rf "$TRABAJO"' EXIT
