@@ -32,7 +32,17 @@ after(async () => {
 // Borrar usuario alcanza: carta y sesion caen por ON DELETE CASCADE.
 beforeEach(async () => { await pool.query('DELETE FROM usuario') })
 
-const pedir = (opciones) => app.inject(opciones)
+/* Cada pedido de los tests sale con su propia IP, salvo que el test diga otra cosa: el
+   freno a la fuerza bruta es por IP y el balde vive en el `app`, que es uno solo para
+   todo el archivo. Sin esto los tests se comen el balde entre ellos —ahora que el
+   registro también frena— y los últimos empiezan a recibir 429 por culpa de los
+   primeros. */
+let cliente = 0
+const pedir = (opciones) =>
+  app.inject({
+    ...opciones,
+    headers: { 'cf-connecting-ip': `10.0.${(++cliente / 250) | 0}.${cliente % 250}`, ...opciones.headers },
+  })
 
 async function registrar(usuario, clave = 'kamehameha') {
   const r = await pedir({ method: 'POST', url: '/api/registro', payload: { usuario, clave } })
@@ -218,6 +228,59 @@ test('sigue sin aceptar cualquier cosa de usuario', async () => {
     })
     assert.equal(r.statusCode, 400, `"${malo.slice(0, 20)}" devolvió ${r.statusCode}`)
   }
+})
+
+/* Los dos tests del freno usan una CF-Connecting-IP propia cada uno, a propósito: el
+   balde es por IP y vive en el `app`, que es uno solo para todo el archivo. Si gastaran
+   el de 127.0.0.1 —el socket de app.inject— los demás tests empezarían a comer 429. */
+
+test('el freno cuenta por IP de verdad: una cabecera inventada no estrena contador', async () => {
+  // Es el agujero del trustProxy: con `true`, Fastify tomaba el X-Forwarded-For que
+  // manda el cliente, así que cada intento con una IP distinta era un balde nuevo y el
+  // tope no existía.
+  const codigos = []
+  for (let i = 0; i < 13; i++) {
+    const r = await pedir({
+      method: 'POST',
+      url: '/api/sesion',
+      headers: { 'cf-connecting-ip': '10.9.9.1', 'x-forwarded-for': `198.51.100.${i}` },
+      payload: { usuario: `nadie-${i}@ejemplo.com`, clave: 'claveMala1' },
+    })
+    codigos.push(r.statusCode)
+  }
+  assert.ok(codigos.includes(429), `nunca frenó: ${codigos.join(',')}`)
+  assert.equal(codigos.at(-1), 429, 'el último tendría que estar frenado')
+  // Y el freno es de esa IP, no de todos: otra sigue pudiendo intentar.
+  const otra = await pedir({
+    method: 'POST', url: '/api/sesion',
+    headers: { 'cf-connecting-ip': '10.9.9.99' },
+    payload: { usuario: 'nadie@ejemplo.com', clave: 'claveMala1' },
+  })
+  assert.equal(otra.statusCode, 401, 'el balde no puede ser uno solo para todos')
+})
+
+test('el registro también tiene freno, y no hashea si el usuario ya existe', async () => {
+  const codigos = []
+  for (let i = 0; i < 13; i++) {
+    const r = await pedir({
+      method: 'POST',
+      url: '/api/registro',
+      headers: { 'cf-connecting-ip': '10.9.9.2' },
+      payload: { usuario: `basura-${i}@ejemplo.com`, clave: 'kamehameha' },
+    })
+    codigos.push(r.statusCode)
+  }
+  assert.ok(codigos.includes(429), `el registro no frenó nunca: ${codigos.join(',')}`)
+
+  // Y el duplicado se rechaza antes del scrypt: sigue dando 409, que es lo que se ve
+  // desde afuera. Lo que cambia es que ya no se paga el hash para tirarlo.
+  await registrar('gohan@ejemplo.com')
+  const repe = await pedir({
+    method: 'POST', url: '/api/registro',
+    headers: { 'cf-connecting-ip': '10.9.9.3' },
+    payload: { usuario: 'gohan@ejemplo.com', clave: 'otraClave1' },
+  })
+  assert.equal(repe.statusCode, 409, repe.body)
 })
 
 test('la sesión dura 30 días y no más', async () => {

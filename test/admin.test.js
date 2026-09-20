@@ -29,8 +29,16 @@ after(async () => {
 
 beforeEach(async () => { await pool.query('DELETE FROM usuario') })
 
+/* Una IP por registro: el freno a la fuerza bruta es por IP y el balde vive en el
+   `app`, que es uno solo para todo el archivo. Ahora que el registro también frena, sin
+   esto los tests se comerían el balde entre ellos. */
+let cliente = 0
+
 const registrar = async (usuario) => {
-  const r = await app.inject({ method: 'POST', url: '/api/registro', payload: { usuario, clave: 'kamehameha' } })
+  const r = await app.inject({
+    method: 'POST', url: '/api/registro', payload: { usuario, clave: 'kamehameha' },
+    headers: { 'cf-connecting-ip': `10.1.0.${++cliente}` },
+  })
   assert.equal(r.statusCode, 200, r.body)
   return r.json().token
 }
@@ -67,7 +75,10 @@ test('usar la app anota el día, aunque no se entre de nuevo', async () => {
 /* Saber cuántos la instalaron es lo que va a decir si el aviso sirvió. Y una vez que
    el día quedó marcado como app, entrar por el navegador no lo tiene que borrar. */
 test('entrar como app queda anotado, y el navegador no lo pisa', async () => {
-  const r = await app.inject({ method: 'POST', url: '/api/registro?app=1', payload: { usuario: OTRO, clave: 'kamehameha' } })
+  const r = await app.inject({
+    method: 'POST', url: '/api/registro?app=1', payload: { usuario: OTRO, clave: 'kamehameha' },
+    headers: { 'cf-connecting-ip': `10.1.0.${++cliente}` },
+  })
   assert.equal(r.statusCode, 200, r.body)
   const token = r.json().token
 

@@ -30,9 +30,6 @@ const esAdmin = (usuario) => ADMINS.includes(String(usuario).toLowerCase())
 
 export function crearApp(pool) {
   const app = Fastify({
-    // Va detrás de Traefik: sin esto, la IP de todos sería la del proxy y el freno
-    // de intentos de abajo sería uno solo para el mundo entero.
-    trustProxy: true,
     bodyLimit: 2 * 1024 * 1024,
     logger: { level: process.env.DBZ_LOG ?? 'info' },
   })
@@ -42,6 +39,29 @@ export function crearApp(pool) {
   /* --- Freno a la fuerza bruta -------------------------------------------------
      Sin esto, probar claves contra /sesion sale gratis. Se cuenta por IP y se
      olvida solo; alcanza para lo que es, y no agrega ni una dependencia. */
+
+  /* De dónde sale la IP del cliente, que es la clave del balde.
+
+     Antes esto era `trustProxy: true` y `pedido.ip`. Fastify, con esa opción, toma el
+     valor más a la IZQUIERDA de `X-Forwarded-For`, que es exactamente el que pone el
+     cliente: con una cabecera distinta en cada pedido, cada intento estrenaba su propio
+     contador y el tope no existía.
+
+     Por el camino normal eso hoy no se puede explotar, porque Cloudflare reescribe esa
+     cabecera y descarta lo que haya mandado el cliente — se verificó contra producción:
+     doce intentos con la misma IP falsa activaron el freno, y seis con IPs distintas
+     dieron 429 igual. Pero el origen es alcanzable directo por el 443, y por ahí sí la
+     controlaría el atacante.
+
+     Así que se usa `CF-Connecting-IP`, que la pone Cloudflare y pisa cualquier valor del
+     cliente. Si no está, se cae al socket, que detrás de Traefik es el mismo para todos:
+     eso falla CERRADO — quien le pegue directo al origen comparte un solo balde con
+     todos los demás que hagan lo mismo. */
+  const ipDe = (pedido) => {
+    const cf = pedido.headers['cf-connecting-ip']
+    return (typeof cf === 'string' && cf.trim()) || pedido.ip
+  }
+
   const intentos = new Map()
   const TOPE = 10
   const VENTANA = 15 * 60 * 1000
@@ -74,9 +94,25 @@ export function crearApp(pool) {
   }
 
   app.post('/api/registro', async (pedido, respuesta) => {
+    /* El mismo freno que /sesion, que acá faltaba. Cada pedido corre un scrypt —16 MB
+       y ~100 ms de CPU, con 0.5 disponibles en el contenedor—, así que un bucle trivial
+       saturaba el threadpool y frenaba TODA la API, incluido /api/salud: con el
+       healthcheck en rojo, Docker mata y reinicia la tarea. Y de paso llenaba la tabla
+       de cuentas basura. */
+    if (frenado(ipDe(pedido)))
+      return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
+
     const { usuario, clave } = pedido.body ?? {}
     const mal = revisarCredenciales(usuario, clave)
     if (mal) return respuesta.code(400).send({ error: mal })
+
+    /* Mirar antes de hashear. El scrypt se evaluaba como argumento del INSERT, o sea
+       que se pagaba entero aunque el usuario ya existiera y el UNIQUE fuera a rechazar
+       la fila igual. El UNIQUE sigue siendo el que decide —dos registros simultáneos
+       con el mismo nombre los resuelve la base, no este SELECT, que puede quedar viejo
+       entre medio—; esto sólo evita pagar el scrypt por cada intento repetido. */
+    const [ya] = await pool.query('SELECT 1 FROM usuario WHERE usuario = ? LIMIT 1', [usuario])
+    if (ya.length) return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
 
     let id
     try {
@@ -98,7 +134,7 @@ export function crearApp(pool) {
   })
 
   app.post('/api/sesion', async (pedido, respuesta) => {
-    if (frenado(pedido.ip))
+    if (frenado(ipDe(pedido)))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
 
     const { usuario, clave } = pedido.body ?? {}
@@ -116,7 +152,7 @@ export function crearApp(pool) {
     if (!fila || typeof clave !== 'string') return negar()
     if (!await claveCoincide(clave, fila.hash)) return negar()
 
-    perdonar(pedido.ip)
+    perdonar(ipDe(pedido))
     anotarVisita(pool, fila.id, pedido.query?.app === '1')
     return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
   })
