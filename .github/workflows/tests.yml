@@ -14,6 +14,13 @@ name: Tests
 on:
   push:
     branches: [main]
+  # También en los PR. Sin esto, los que abre Dependabot llegan SIN un solo test
+  # corrido: se vio con los cuatro primeros, que figuraban como «sin checks». Y en este
+  # repo eso importa más que en otros, porque lo que se mergea a main se despliega solo.
+  #
+  # No duplica corridas: el `push` de arriba sólo mira `main`, así que una rama de PR
+  # dispara únicamente esta.
+  pull_request:
   workflow_dispatch:
 
 jobs:
