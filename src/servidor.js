@@ -8,6 +8,7 @@ import { conectar, conectarSalud, prepararEsquema, borrarVencidas } from './base
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
   usuarioDeToken, revisarCredenciales, tokenDe, gastarComoSiExistiera,
+  cambiarClave, cerrarLasDemas,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, claveValida } from './coleccion.js'
 import { anotarVisita, resumen } from './estadisticas.js'
@@ -229,6 +230,48 @@ export function crearApp(pool, poolSalud = pool) {
   app.delete('/api/sesion', { preHandler: conSesion }, async (pedido) => {
     await cerrarSesion(pool, tokenDe(pedido))
     return { chau: true }
+  })
+
+  /* Cambiar la clave, que también echa a todas las demás sesiones.
+
+     Sin esto, a quien le robaban el token o le adivinaban la clave no tenía NADA que
+     hacer: la sesión ajena vive 30 días y no había forma de cortarla ni de cambiar nada.
+     La única salida era escribirle a Angel para que borrara filas a mano.
+
+     Las dos mitades van juntas a propósito. Cambiar la clave y dejar vivas las sesiones
+     abiertas no echa a nadie —el token no sabe nada de la clave—, y cerrar sesiones sin
+     cambiar la clave deja entrar de nuevo al que la sabe. Por separado, cada mitad da una
+     falsa sensación de haber resuelto algo.
+
+     La sesión que hace el pedido sobrevive: si se cerraran todas, el dueño quedaría
+     afuera por cuidarse. */
+  app.put('/api/clave', { preHandler: conSesion }, async (pedido, respuesta) => {
+    /* Con freno, y por cuenta. Acá el atacante YA tiene el token —si no, no llega—, así
+       que no está adivinando desde cero; pero sin freno esto es un oráculo cómodo para
+       probar la clave actual sin que el usuario se entere de nada. */
+    const llave = `clave|${pedido.usuario.id}`
+    if (frenado(llave, TOPE_CUENTA))
+      return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
+
+    const { actual, nueva } = pedido.body ?? {}
+    if (typeof actual !== 'string' || !actual)
+      return respuesta.code(400).send({ error: 'Falta tu clave actual.' })
+
+    // La nueva pasa por la misma validación que al registrarse: el usuario ya está, así
+    // que se revisa con el suyo.
+    const mal = revisarCredenciales(pedido.usuario.usuario, nueva)
+    if (mal) return respuesta.code(400).send({ error: mal })
+    if (nueva === actual)
+      return respuesta.code(400).send({ error: 'La clave nueva tiene que ser distinta.' })
+
+    if (!(await cambiarClave(pool, pedido.usuario.id, actual, nueva))) {
+      sumar(llave)
+      return respuesta.code(401).send({ error: 'Tu clave actual no es esa.' })
+    }
+    perdonar(llave)
+
+    const echadas = await cerrarLasDemas(pool, pedido.usuario.id, tokenDe(pedido))
+    return { echadas }
   })
 
   app.get('/api/yo', { preHandler: conSesion }, async (pedido) => ({

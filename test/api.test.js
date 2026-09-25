@@ -509,3 +509,63 @@ test('una clave más larga que la columna se rechaza con 400, no con un 500', as
   })
   assert.equal(unaMas.statusCode, 400, 'y uno más, no')
 })
+
+/* #58. Al dueño de una cuenta comprometida no le quedaba NADA que hacer: el token ajeno
+   vive 30 días, no había cambio de clave ni forma de cortar sesiones, y la única salida
+   era pedirle a Angel que borrara filas a mano.
+
+   Las dos mitades van juntas a propósito y por eso se prueban juntas: cambiar la clave
+   sin echar a las sesiones abiertas no echa a nadie —el token no sabe nada de la clave—,
+   y echarlas sin cambiar la clave deja entrar de nuevo al que la sabe. */
+test('cambiar la clave echa a las otras sesiones y deja viva la propia', async () => {
+  const yo = await registrar('bulma@ejemplo.com')
+  // El intruso entra con la clave robada: es una sesión más, indistinguible.
+  const intruso = (await pedir({
+    method: 'POST', url: '/api/sesion', payload: { usuario: 'bulma@ejemplo.com', clave: 'kamehameha' },
+  })).json().token
+  assert.notEqual(intruso, yo)
+  for (const t of [yo, intruso])
+    assert.equal((await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(t) })).statusCode, 200)
+
+  const r = await pedir({
+    method: 'PUT', url: '/api/clave', headers: auth(yo),
+    payload: { actual: 'kamehameha', nueva: 'otra-clave-larga' },
+  })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.equal(r.json().echadas, 1, 'tenía que echar exactamente a la otra sesión')
+
+  assert.equal((await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(yo) })).statusCode, 200,
+    'la sesión que pidió el cambio sobrevive: si no, te quedás afuera por cuidarte')
+  assert.equal((await pedir({ method: 'GET', url: '/api/coleccion', headers: auth(intruso) })).statusCode, 401,
+    'y la del intruso deja de servir en el acto')
+
+  // Y la clave vieja ya no entra; la nueva sí.
+  assert.equal((await pedir({ method: 'POST', url: '/api/sesion',
+    payload: { usuario: 'bulma@ejemplo.com', clave: 'kamehameha' } })).statusCode, 401)
+  assert.equal((await pedir({ method: 'POST', url: '/api/sesion',
+    payload: { usuario: 'bulma@ejemplo.com', clave: 'otra-clave-larga' } })).statusCode, 200)
+})
+
+test('no se cambia la clave sin saber la actual, ni por una que no sirve', async () => {
+  const token = await registrar('chichi@ejemplo.com')
+  const casos = [
+    ['con la actual equivocada', { actual: 'no-es-esa', nueva: 'una-clave-larga' }, 401],
+    ['sin la actual', { nueva: 'una-clave-larga' }, 400],
+    ['con una nueva corta', { actual: 'kamehameha', nueva: 'corta' }, 400],
+    ['con la misma de siempre', { actual: 'kamehameha', nueva: 'kamehameha' }, 400],
+    ['sin cuerpo', undefined, 400],
+  ]
+  for (const [nombre, payload, esperado] of casos) {
+    const r = await pedir({ method: 'PUT', url: '/api/clave', headers: auth(token), payload })
+    assert.equal(r.statusCode, esperado, `${nombre}: esperaba ${esperado} y fue ${r.statusCode} (${r.body})`)
+  }
+  // Después de todo eso, la clave original sigue siendo la que sirve.
+  assert.equal((await pedir({ method: 'POST', url: '/api/sesion',
+    payload: { usuario: 'chichi@ejemplo.com', clave: 'kamehameha' } })).statusCode, 200)
+})
+
+test('sin sesión no se cambia la clave de nadie', async () => {
+  await registrar('gohan@ejemplo.com')
+  const r = await pedir({ method: 'PUT', url: '/api/clave', payload: { actual: 'kamehameha', nueva: 'una-clave-larga' } })
+  assert.equal(r.statusCode, 401)
+})

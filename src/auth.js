@@ -65,6 +65,32 @@ export async function cerrarSesion(pool, token) {
   return r.affectedRows
 }
 
+/* Echar a todas las demás sesiones de esta cuenta, menos la que está pidiendo.
+
+   Es la mitad que importa del cambio de clave: cambiarla y dejar vivas las sesiones que
+   ya estaban abiertas no echa a nadie. El token es opaco y dura 30 días, así que quien
+   se lo llevó seguiría entrando un mes entero aunque el dueño cambie la clave todos los
+   días. Se borra la fila y listo: no hay nada que caducar del lado del navegador, que es
+   justamente por qué esto no son JWT. */
+export async function cerrarLasDemas(pool, usuarioId, tokenActual) {
+  const [r] = await pool.query(
+    'DELETE FROM sesion WHERE usuario_id = ? AND hash <> ?',
+    [usuarioId, hashDeToken(tokenActual)]
+  )
+  return r.affectedRows
+}
+
+/* Cambiar la clave. Devuelve false si la actual no coincide — y paga el scrypt igual,
+   porque acá el usuario ya está identificado por el token y no hay nada que filtrar,
+   pero el tiempo constante no cuesta nada y evita pensarlo de nuevo mañana. */
+export async function cambiarClave(pool, usuarioId, actual, nueva) {
+  const [filas] = await pool.query('SELECT hash FROM usuario WHERE id = ?', [usuarioId])
+  if (!filas.length) return false
+  if (!(await claveCoincide(actual, filas[0].hash))) return false
+  await pool.query('UPDATE usuario SET hash = ? WHERE id = ?', [await hashearClave(nueva), usuarioId])
+  return true
+}
+
 export async function usuarioDeToken(pool, token) {
   if (!token) return null
   const [filas] = await pool.query(
