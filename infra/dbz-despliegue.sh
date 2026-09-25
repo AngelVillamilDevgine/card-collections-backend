@@ -17,6 +17,8 @@ ESTADO=/var/lib/dbz-despliegue
 # `df -BG` redondea para ARRIBA: con 8.2G libres dice 9G, y el margen real quedaba
 # hasta un giga por debajo de lo que uno cree estar exigiendo.
 DISCO_MINIMO_MB=3072
+# La huella del Dockerfile que ESTE SERVIDOR aprobó. Ver más abajo por qué existe.
+REFERENCIA_DOCKERFILE=/etc/dbz-dockerfile.sha256
 # Cuántas vueltas de 3 s se espera a que el swarm se asiente antes de decidir.
 #
 # El techo eran 60 s y los deploys reales tardan 51, 52, 53 y 55 — el margen era de
@@ -186,6 +188,56 @@ trap 'rm -rf "$TRABAJO" "$CAB" "$CUERPO"' EXIT
 git -C "$TRABAJO" init -q
 git -C "$TRABAJO" fetch -q --depth 1 "https://github.com/$REPO.git" "$SHA"
 git -C "$TRABAJO" checkout -q FETCH_HEAD
+
+# --- 2b. El Dockerfile lo pone el servidor, no el commit --------------------------
+#
+# Hasta acá, un push a main con los tests en verde hacía que este servidor ejecutara el
+# Dockerfile de ese commit. Medido el 2026-09-25 con un build de prueba, lo que eso da:
+#
+#     quien soy en el build:  0:root
+#     alcanza el MySQL de los clientes en 172.17.0.1:3306
+#     y también el MongoDB
+#     y tiene internet
+#
+# O sea que un `RUN` cualquiera en un Dockerfile corría como root con acceso a las bases
+# de los clientes. El radio de explosión de una cuenta de GitHub comprometida no era esta
+# app: era el servidor entero.
+#
+# Aislar la red del build no alcanza: se probó, `--network=none` efectivamente corta el
+# acceso al 3306, pero nuestro build necesita internet para el `npm ci`. Lo que sí cierra
+# el agujero es que el Dockerfile no venga de afuera. Si el del commit no es exactamente
+# el que este servidor tiene aprobado, no se construye: se avisa y se para.
+#
+# Lo que eso cuesta: cambiar el Dockerfile ya no es sólo pushear, hay que aprobar la
+# huella nueva en el servidor. Es a propósito — es el único archivo del repo que se
+# ejecuta con privilegios acá, y que un humano lo mire una vez es exactamente la
+# propiedad que se busca. Para aprobarlo:
+#
+#     sha256sum Dockerfile | cut -d' ' -f1 > /etc/dbz-dockerfile.sha256
+#
+# Lo que NO cierra: una dependencia comprometida sigue llegando al contenedor y corriendo
+# ahí en tiempo de ejecución. Eso se acota con `--ignore-scripts` en el `npm ci` (no
+# ejecuta nada al instalar) y, sobre todo, cerrando el MySQL compartido, que es el #1.
+if [ ! -s "$REFERENCIA_DOCKERFILE" ]; then
+  decir "falta $REFERENCIA_DOCKERFILE: no sé qué Dockerfile está aprobado, así que no construyo"
+  decir "  se aprueba con: sha256sum Dockerfile | cut -d' ' -f1 > $REFERENCIA_DOCKERFILE"
+  anotar "{\"estado\":\"sin-referencia\",\"commit\":\"$CORTO\"}"
+  exit 1
+fi
+
+HUELLA=$(sha256sum "$TRABAJO/Dockerfile" 2>/dev/null | cut -d' ' -f1)
+APROBADA=$(tr -d ' \n\r' < "$REFERENCIA_DOCKERFILE")
+if [ "$HUELLA" != "$APROBADA" ]; then
+  decir "el Dockerfile de $CORTO NO es el que este servidor aprobó: no construyo"
+  decir "  aprobado: $APROBADA"
+  decir "  el del commit: ${HUELLA:-sin Dockerfile}"
+  decir "  si el cambio es tuyo y lo revisaste: sha256sum Dockerfile | cut -d' ' -f1 > $REFERENCIA_DOCKERFILE"
+  # Se descarta para no repetir el aviso cada cinco minutos. La marca caduca a las 24
+  # horas, así que si nadie lo aprueba, mañana vuelve a decirlo.
+  touch "$ESTADO/descartado-$CORTO"
+  anotar "{\"estado\":\"dockerfile-sin-aprobar\",\"commit\":\"$CORTO\"}"
+  exit 1
+fi
 
 # --pull: `node:22-alpine` es un tag MÓVIL. Sin esto se sigue construyendo para
 # siempre sobre la copia local del día que se bajó por primera vez, con los CVE de

@@ -125,6 +125,21 @@ export function crearApp(pool, poolSalud = pool) {
   reloj.unref()
   app.addHook('onClose', () => clearInterval(reloj))
 
+  /* HSTS también en la API, y no sólo en el front.
+
+     La cabecera es POR HOST: la que manda cromeros.com.ar no cubre a
+     api.cromeros.com.ar. Y acá importa igual o más, porque por esta puerta viajan el
+     token de sesión en cada pedido y la clave al entrar. La primera visita es la única
+     ventana que esto cierra —el `http://` que el navegador intenta antes de que lo
+     redirijan—, pero es la ventana donde quien esté en el medio se lleva todo.
+
+     Sin `preload` y sin `includeSubDomains`, por las mismas razones que en el `_headers`
+     del front: las dos son puertas de una sola dirección y ninguna hace falta para tener
+     el beneficio. */
+  app.addHook('onRequest', async (pedido, respuesta) => {
+    respuesta.header('Strict-Transport-Security', 'max-age=31536000')
+  })
+
   /* --- Sesión ---------------------------------------------------------------- */
 
   async function conSesion(pedido, respuesta) {

@@ -569,3 +569,22 @@ test('sin sesión no se cambia la clave de nadie', async () => {
   const r = await pedir({ method: 'PUT', url: '/api/clave', payload: { actual: 'kamehameha', nueva: 'una-clave-larga' } })
   assert.equal(r.statusCode, 401)
 })
+
+/* HSTS es por HOST: la cabecera que manda el front no cubre a api.cromeros.com.ar, y por
+   esta puerta viajan el token en cada pedido y la clave al entrar. Va en TODAS las
+   respuestas, incluidas las que fallan: un 401 por http:// filtra igual. */
+test('todas las respuestas llevan HSTS, salgan bien o mal', async () => {
+  const token = await registrar('hsts@ejemplo.com')
+  const casos = [
+    ['una ruta con sesión', { method: 'GET', url: '/api/coleccion', headers: auth(token) }],
+    ['el healthcheck, sin token', { method: 'GET', url: '/api/salud' }],
+    ['un 401', { method: 'GET', url: '/api/coleccion' }],
+    ['un 404', { method: 'GET', url: '/api/no-existe' }],
+  ]
+  for (const [nombre, pedido] of casos) {
+    const r = await pedir(pedido)
+    assert.equal(r.headers['strict-transport-security'], 'max-age=31536000',
+      `${nombre} tendría que llevar HSTS y llevó: ${r.headers['strict-transport-security']}`)
+  }
+})
+
