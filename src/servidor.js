@@ -4,7 +4,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { conectar, prepararEsquema, borrarVencidas } from './base.js'
+import { conectar, conectarSalud, prepararEsquema, borrarVencidas } from './base.js'
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
   usuarioDeToken, revisarCredenciales, tokenDe, gastarComoSiExistiera,
@@ -32,7 +32,7 @@ const ORIGENES = (process.env.DBZ_ORIGENES ?? 'http://localhost:5173')
 
 const esAdmin = (usuario) => ADMINS.includes(String(usuario).toLowerCase())
 
-export function crearApp(pool) {
+export function crearApp(pool, poolSalud = pool) {
   const app = Fastify({
     bodyLimit: 2 * 1024 * 1024,
     logger: { level: process.env.DBZ_LOG ?? 'info' },
@@ -307,10 +307,16 @@ export function crearApp(pool) {
   })
 
   /* --- Para el deploy: si esto no contesta, la versión nueva no sirve. ---------
-     Toca la base a propósito: un proceso vivo que no llega al MySQL no sirve. */
+     Toca la base a propósito: un proceso vivo que no llega al MySQL no sirve.
+
+     Pero por un pool APARTE, de una conexión. Este endpoint decide si el swarm mata la
+     tarea, y no puede decidirlo con la cola que llenó el propio tráfico: con diez
+     reemplazos simultáneos quedaba esperando turno, el swarm lo daba por muerto y
+     reiniciaba justo cuando más carga había. En los tests no hay pool aparte y usa el
+     mismo, que es lo que corresponde ahí. */
   app.get('/api/salud', async (pedido, respuesta) => {
     try {
-      await pool.query('SELECT 1')
+      await poolSalud.query('SELECT 1')
     } catch {
       return respuesta.code(503).send({ bien: false, error: 'sin base' })
     }
@@ -323,12 +329,38 @@ export function crearApp(pool) {
 /* Sólo arranca si lo corrés directo, no si lo importa un test. */
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const pool = conectar()
-  await prepararEsquema(pool)
-  await borrarVencidas(pool)
+  const poolSalud = conectarSalud()
+
+  /* Reintentar con espera creciente en vez de morir.
+
+     Antes esto era un `await prepararEsquema(pool)` pelado: si el MySQL no estaba —se
+     reinició el contenedor, se quedó sin disco, tardó en levantar— el proceso salía, el
+     `restart_policy: on-failure` del stack lo volvía a levantar a los 5 segundos, y otra
+     vez. Un bucle de reinicio cada 5 segundos contra una base caída no ayuda a que la
+     base vuelva: la castiga, llena el log y no deja ninguna pista de qué pasó.
+
+     Ahora espera. Y si después de todos los intentos sigue sin base, ARRANCA IGUAL: con
+     `/api/salud` devolviendo 503, que es la verdad, y cada pedido fallando rápido en vez
+     de un proceso que nace y muere. El swarm decide con el healthcheck, que para eso
+     está, y nosotros dejamos el motivo escrito en el log una sola vez. */
+  const ESPERAS = [2000, 5000, 10000, 20000, 30000]
+  let listo = false
+  for (let i = 0; i <= ESPERAS.length; i++) {
+    try { await prepararEsquema(pool); listo = true; break } catch (e) {
+      const ultima = i === ESPERAS.length
+      console.error(`[arranque] no pude preparar el esquema (intento ${i + 1}): ${e.message}`)
+      if (ultima) break
+      await new Promise((r) => setTimeout(r, ESPERAS[i]))
+    }
+  }
+  if (!listo)
+    console.error('[arranque] arranco igual, sin base: /api/salud va a contestar 503 hasta que vuelva')
+
+  await borrarVencidas(pool).catch(() => {})
   const limpieza = setInterval(() => borrarVencidas(pool).catch(() => {}), 24 * 60 * 60 * 1000)
   limpieza.unref()
 
-  const app = crearApp(pool)
+  const app = crearApp(pool, poolSalud)
   app.listen({ port: PUERTO, host: DIRECCION })
     .then(() => app.log.info(`origenes permitidos: ${ORIGENES.join(', ')}`))
     .catch((e) => { app.log.error(e); process.exit(1) })
@@ -338,7 +370,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   for (const senal of ['SIGTERM', 'SIGINT']) {
     process.on(senal, async () => {
       await app.close()
-      await pool.end()
+      await Promise.all([pool.end(), poolSalud.end()].map((p) => p.catch(() => {})))
       process.exit(0)
     })
   }

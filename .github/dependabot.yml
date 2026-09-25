@@ -1,0 +1,31 @@
+# Avisos de dependencias con una vulnerabilidad conocida, y actualizaciones al día.
+#
+# Por qué hace falta: nadie mira `npm audit` a mano, y este proyecto despliega solo —
+# un push a main con los tests en verde va a producción sin que nadie lo revise. Sin
+# esto, una dependencia con un CVE se queda adentro para siempre y en silencio.
+#
+# Una vez por semana y no por día: son pocas dependencias y un PR diario se vuelve
+# ruido que se ignora, que es peor que no tenerlo.
+#
+# Los PR NO se despliegan solos: el servidor mira el último commit de `main`, así que
+# un PR abierto no toca producción hasta que alguien lo mergea. Los tests sí corren.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Los parches y menores juntos en un PR: son los que casi siempre se mergean sin
+      # mirar. Los mayores quedan sueltos, porque esos sí hay que leerlos.
+      menores:
+        update-types: [minor, patch]
+
+  # Las acciones del workflow también son código de terceros que corre con acceso al repo.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

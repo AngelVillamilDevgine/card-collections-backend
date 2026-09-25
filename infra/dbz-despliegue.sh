@@ -74,12 +74,65 @@ tarea_viva() {
 
 # --- 1. Qué dice GitHub del último commit ------------------------------------------
 # Una sola consulta por vuelta: check-runs de main trae el SHA y el resultado de los
-# tests juntos. Sin token GitHub deja 60 por hora; cada dos minutos son 30.
-if ! RESP=$(curl -fsS -m 20 -H 'Accept: application/vnd.github+json' \
-      "https://api.github.com/repos/$REPO/commits/main/check-runs"); then
-  decir "GitHub no contestó; pruebo en la próxima vuelta"
-  exit 0
+# tests juntos.
+# La cuota de la API de GitHub sin token son 60 por hora y es POR IP: la comparte
+# todo el VPS. Este timer se comía la mitad él solo, y si otro proceso de la máquina
+# consultaba GitHub se quedaban los dos sin nada y los deploys se congelaban hasta
+# una hora, en silencio.
+#
+# Lo primero que se probó fue mandar el ETag para que GitHub conteste 304. NO SIRVE:
+# se midió contra la API de verdad y los 304 gastan cuota igual cuando no hay token
+# (cuatro seguidos bajaron el contador de 49 a 46). La documentación dice que los 304
+# no cuentan, y para pedidos sin autenticar es falso. Así que el arreglo es otro:
+#
+#   - el timer pasa de 2 a 5 minutos, o sea de 30 llamadas por hora a 12;
+#   - y cuando la cuota QUE COMPARTE TODA LA MÁQUINA baja del piso, este script se
+#     corre solo hasta que se renueva, en vez de correr a gastarla antes que el otro.
+#     Se anota la hora de renovación y no se vuelve a llamar hasta entonces.
+CUOTA_MINIMA=15
+PAUSA="$ESTADO/github-pausa"
+if [ -s "$PAUSA" ] && [ "$(date +%s)" -lt "$(cat "$PAUSA" 2>/dev/null || echo 0)" ]; then
+  exit 0   # callado a propósito: si no, llena el journal cada cinco minutos
 fi
+
+CAB=$(mktemp); CUERPO=$(mktemp)
+# Trap desde ya: este bloque tiene varias salidas tempranas y sin esto dejaba dos
+# temporales tirados en cada una.
+trap 'rm -f "$CAB" "$CUERPO"' EXIT
+
+CODIGO=$(curl -sS -m 20 -o "$CUERPO" -D "$CAB" -w '%{http_code}' \
+  -H 'Accept: application/vnd.github+json' \
+  "https://api.github.com/repos/$REPO/commits/main/check-runs" || echo 000)
+
+# Las cabeceras de cuota vienen igual en el 200 y en el 403.
+limite() { sed -n "s/^[Xx]-[Rr]ate[Ll]imit-$1: *//p" "$CAB" | tr -d '\r' | head -1; }
+QUEDAN=$(limite Remaining)
+VUELVE=$(limite Reset)
+cuando() { date -d "@$1" '+%H:%M' 2>/dev/null || echo "$1"; }
+
+# Si la cuota compartida quedó baja, se anota hasta cuándo no molestar más.
+if [ -n "$QUEDAN" ] && [ -n "$VUELVE" ] && [ "$QUEDAN" -le "$CUOTA_MINIMA" ]; then
+  echo "$VUELVE" > "$PAUSA"
+  decir "quedan $QUEDAN llamadas a GitHub para TODO el servidor: no consulto hasta las $(cuando "$VUELVE")"
+fi
+
+case "$CODIGO" in
+  200)
+    RESP=$(cat "$CUERPO")
+    ;;
+  403|429)
+    if [ "${QUEDAN:-1}" = "0" ] && [ -n "$VUELVE" ]; then
+      decir "cuota de GitHub agotada; vuelve a las $(cuando "$VUELVE")"
+    else
+      decir "GitHub contestó $CODIGO; pruebo en la próxima vuelta"
+    fi
+    exit 0
+    ;;
+  *)
+    decir "GitHub no contestó ($CODIGO); pruebo en la próxima vuelta"
+    exit 0
+    ;;
+esac
 
 read -r SHA RESULTADO < <(printf '%s' "$RESP" | CHECK="$CHECK" python3 -c '
 import json, os, sys
@@ -124,14 +177,23 @@ if [ "${LIBRE:-0}" -lt "$DISCO_MINIMO_MB" ]; then
 fi
 
 TRABAJO=$(mktemp -d)
-trap 'rm -rf "$TRABAJO"' EXIT
+# Un solo trap EXIT manda: el segundo pisa al primero. Por eso este limpia también
+# los temporales de la consulta a GitHub, que si no quedaban tirados en /tmp uno por
+# deploy y para siempre.
+trap 'rm -rf "$TRABAJO" "$CAB" "$CUERPO"' EXIT
 
 # Sólo ese commit, sin historia. Si falla es la red: no se anota, se reintenta solo.
 git -C "$TRABAJO" init -q
 git -C "$TRABAJO" fetch -q --depth 1 "https://github.com/$REPO.git" "$SHA"
 git -C "$TRABAJO" checkout -q FETCH_HEAD
 
-if ! docker build -t "$IMAGEN:$CORTO" "$TRABAJO" > "$TRABAJO/build.log" 2>&1; then
+# --pull: `node:22-alpine` es un tag MÓVIL. Sin esto se sigue construyendo para
+# siempre sobre la copia local del día que se bajó por primera vez, con los CVE de
+# ese día, por más deploys que se hagan — y dos builds del mismo commit pueden dar
+# runtimes distintos. Es lo único que mantiene parcheado el sistema operativo del
+# contenedor. Si Docker Hub no contesta, el build falla, NO se anota como descartado
+# y se reintenta solo en la próxima vuelta.
+if ! docker build --pull -t "$IMAGEN:$CORTO" "$TRABAJO" > "$TRABAJO/build.log" 2>&1; then
   decir "no construyó; se descarta $CORTO. Últimas líneas:"
   tail -20 "$TRABAJO/build.log"
   touch "$ESTADO/descartado-$CORTO"
@@ -195,7 +257,16 @@ decir "desplegado $CORTO"
 anotar "{\"estado\":\"ok\",\"commit\":\"$CORTO\"}"
 
 # --- 4. Limpiar ---------------------------------------------------------------------
-# Sólo imágenes de este proyecto, y queda la anterior: sin ella no hay rollback.
+# Sólo imágenes de este proyecto, y quedan las últimas: sin ellas no hay rollback.
+#
+# `PreviousSpec` NO alcanza para saber cuál es la anterior: queda vacío después de un
+# `docker stack deploy` a mano, y entonces esto borraba TODAS menos la actual, incluida
+# la única a la que se podía volver. El rollback del swarm quedaba apuntando a una
+# imagen que ya no existía en ninguna parte — y no está en ningún registry, así que no
+# hay de dónde bajarla de nuevo.
+#
+# Ahora se guarda por fecha: la actual siempre, más las dos más nuevas después de
+# ella. No depende de que el swarm recuerde nada.
 PREVIA=$(imagen_de '{{if .PreviousSpec}}{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}{{end}}')
 # Un `docker image rm` falla mientras un contenedor parado siga usando esa imagen, y el
 # swarm guarda los de las tareas viejas. Se borran sólo los de este servicio: los de los
@@ -203,13 +274,38 @@ PREVIA=$(imagen_de '{{if .PreviousSpec}}{{.PreviousSpec.TaskTemplate.ContainerSp
 docker ps -a --filter "name=dbz-api_api." --filter "status=exited" -q |
   xargs -r docker rm > /dev/null 2>&1 || true
 
+GUARDAR=$(mktemp)
+{ echo "$IMAGEN:$CORTO"
+  [ -n "$PREVIA" ] && echo "$PREVIA"
+  # Las más nuevas primero, sin contar la actual: con dos alcanza para tener a dónde volver.
+  docker images --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' |
+    grep -E 'dbz-cromeros-api:' | sort -r | cut -f2 |
+    grep -v -x "$IMAGEN:$CORTO" | head -2
+} | sort -u > "$GUARDAR"
+
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(devgine/)?dbz-cromeros-api:' |
   while read -r img; do
-    [ "$img" = "$IMAGEN:$CORTO" ] || [ "$img" = "$PREVIA" ] ||
-      docker image rm "$img" > /dev/null 2>&1 || true
+    grep -q -x "$img" "$GUARDAR" || docker image rm "$img" > /dev/null 2>&1 || true
   done
+decir "imágenes que quedan: $(tr '\n' ' ' < "$GUARDAR")"
+rm -f "$GUARDAR"
 
-# La caché de build crece en cada deploy y el disco está al 82%. Antes de este proyecto
-# la caché del servidor estaba en cero —acá no construía nadie—, así que el tope no le
-# quita nada a otro.
-docker buildx prune -f --max-used-space 1gb > /dev/null 2>&1 || true
+# La caché de build crece en cada deploy y el disco está al 83%. Pero `buildx prune` es
+# GLOBAL: no se puede filtrar por proyecto, así que un `--max-used-space 1gb` le borra
+# la caché a cualquiera que construya en esta máquina. Hoy no le quita nada a nadie
+# porque nadie más construye acá; deja de ser cierto el día que alguien lo haga, y ese
+# día nadie va a relacionar sus builds lentos con este timer.
+#
+# Dos cambios para que eso no pase: sólo se poda cuando el disco está de verdad
+# apretado, y se poda por ANTIGÜEDAD en vez de por tamaño — lo más viejo es lo que
+# menos le duele a cualquiera, y nunca toca la caché de un build reciente de otro.
+#
+# Para aislarlo del todo habría que darle a este proyecto su propio builder
+# (`docker buildx create --name dbz`) y podar sólo ése, y eso deja un contenedor
+# buildkit corriendo para siempre en una máquina de 5.8 GB compartida. Se deja
+# anotado y no se hace hasta que haya otro proyecto construyendo acá.
+LIBRE_AHORA=$(df --output=avail -BM /var/lib/docker | tail -1 | tr -dc '0-9')
+if [ "${LIBRE_AHORA:-999999}" -lt $((DISCO_MINIMO_MB * 2)) ]; then
+  decir "quedan ${LIBRE_AHORA}M libres: podo la caché de build de más de una semana"
+  docker buildx prune -f --filter 'until=168h' > /dev/null 2>&1 || true
+fi

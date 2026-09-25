@@ -3,7 +3,12 @@
 # Primer despliegue (una vez):
 #   bash infra/preparar-base.sh        # base, usuario y secret dbz_mysql_url
 #   printf '%s' "<secreto>" | docker secret create dbz_secreto_proxy -
-#   DBZ_DOMINIO=cartas-api.devgine.com.ar #   DBZ_ORIGENES=https://card-collections-frontend.pages.dev #   DBZ_IMAGEN=dbz-cromeros-api:<commit> #     docker stack deploy -c dbz-api.stack.yml --resolve-image never dbz-api
+#   DBZ_DOMINIO=api.cromeros.com.ar #   DBZ_ORIGENES=https://cromeros.com.ar,https://www.cromeros.com.ar #   DBZ_ADMINS=angelvillamil1234@gmail.com #   DBZ_IMAGEN=dbz-cromeros-api:<commit> #     docker stack deploy -c dbz-api.stack.yml --resolve-image never dbz-api
+#
+# Los valores de arriba son los de VERDAD, los que están corriendo. Antes acá decía
+# cartas-api.devgine.com.ar y el pages.dev, que es la arquitectura anterior al dominio
+# propio: quien copiara esas líneas en una emergencia desplegaba una API que Traefik no
+# enruta y que el navegador corta por CORS, y lo iba a buscar en el front.
 #
 # Después el stack no se vuelve a tocar: dbz-despliegue.sh sólo le cambia la imagen.
 # La imagen no está en ningún registry —la construye el servidor—, por eso
@@ -14,7 +19,20 @@ version: "3.8"
 
 services:
   api:
-    image: ${DBZ_IMAGEN}
+    # Las variables van con `:?` y un mensaje: si falta alguna, `docker stack deploy`
+    # se planta y dice cuál, en vez de desplegar con el valor vacío.
+    #
+    # DOS TRAMPAS del mensaje, las dos medidas contra el docker del servidor (29.7):
+    #
+    #  1. Va entre comillas. Sin comillas, unos dos puntos en el texto hacen que el
+    #     YAML lo lea como un mapa y el archivo entero deja de parsear.
+    #  2. NO puede llevar un guion. La interpolación lo confunde con el operador de
+    #     valor por defecto y corta el mensaje ahí. Y lo peligroso es que NO falla:
+    #     con la variable BIEN definida devuelve un pedazo del mensaje en lugar del
+    #     valor. Probado: con la variable valiendo "valor-correcto" y el mensaje
+    #     "falta X - con guion", lo que sale es " con guion". Un image así se
+    #     despliega y la tarea no arranca nunca.
+    image: "${DBZ_IMAGEN:?falta DBZ_IMAGEN, la imagen a desplegar, o sea el nombre con el commit}"
     networks: [proxy]
 
     # Sin ports: no hay ningún puerto publicado. Se entra sólo por Traefik, con el
@@ -25,10 +43,10 @@ services:
       # La URL con la contraseña entra por el secret, no por acá.
       DBZ_MYSQL_URL_FILE: /run/secrets/dbz_mysql_url
       # Qué front tiene permiso de pedirle a esta API. Sin esto el navegador corta.
-      DBZ_ORIGENES: ${DBZ_ORIGENES}
+      DBZ_ORIGENES: "${DBZ_ORIGENES:?falta DBZ_ORIGENES, y sin eso el navegador corta todo por CORS y parece un bug del front}"
       # Quién ve /api/admin/resumen. Separados por coma si alguna vez son varios.
-      DBZ_ADMINS: ${DBZ_ADMINS}
-      DBZ_VERSION: ${DBZ_IMAGEN}
+      DBZ_ADMINS: "${DBZ_ADMINS:?falta DBZ_ADMINS, y sin eso nadie ve el panel de numeros}"
+      DBZ_VERSION: "${DBZ_IMAGEN:?falta DBZ_IMAGEN, la imagen a desplegar, o sea el nombre con el commit}"
       PORT: "8787"
 
     # Un techo a los logs. El driver json-file, sin opciones, crece SIN LÍMITE, y lo
@@ -61,7 +79,7 @@ services:
       labels:
         - "traefik.enable=true"
         - "traefik.docker.network=proxy"
-        - "traefik.http.routers.dbz-api.rule=Host(`${DBZ_DOMINIO}`)"
+        - "traefik.http.routers.dbz-api.rule=Host(`${DBZ_DOMINIO:?falta DBZ_DOMINIO, y sin eso Traefik descarta el router y la API queda inalcanzable}`)"
         - "traefik.http.routers.dbz-api.entrypoints=websecure"
         # tls sin resolver: Traefik sirve su certificado autofirmado y Cloudflare, en modo
         # Full, lo acepta. El resolver "le" usa credenciales de la cuenta de Devgine y no
@@ -76,7 +94,14 @@ services:
         order: start-first
         failure_action: rollback
         delay: 10s
-        monitor: 30s
+        # monitor tiene que ser MÁS LARGO que lo que tarda el healthcheck en dar un
+        # veredicto, o no sirve de nada. El del Dockerfile es start-period 20s más hasta
+        # tres intentos de 15s: hasta 65 segundos para declarar una tarea enferma. Con
+        # los 30s que había, una versión que arranca bien y se muere a los 40 segundos
+        # pasaba la ventana, el swarm la daba por buena y el rollback no se disparaba
+        # nunca. 90s deja margen sobre los 65 y entra cómodo en la espera de cinco
+        # minutos del script de despliegue.
+        monitor: 90s
       rollback_config:
         order: start-first
       restart_policy:

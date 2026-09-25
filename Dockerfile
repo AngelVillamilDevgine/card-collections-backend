@@ -5,8 +5,12 @@ WORKDIR /app
 
 # Las dependencias en su propia capa: mientras el package-lock no cambie, esta capa
 # se reusa y el build tarda segundos en vez de minutos.
+# --ignore-scripts: `npm ci` ejecuta los scripts de instalación de cada dependencia, y
+# este build corre solo en el servidor cuando alguien pushea. Ninguna de las nuestras los
+# necesita (fastify y mysql2 son JavaScript puro), así que apagarlos no cuesta nada y
+# saca del camino el lugar más cómodo para esconder código en un paquete comprometido.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts
 
 COPY src ./src
 COPY bin ./bin

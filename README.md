@@ -64,59 +64,49 @@ nada; para pisarlas, `DBZ_PISAR=1`.
 
 ## Cómo llega un pedido
 
-No hay dominio para la API: no hay acceso al DNS de `devgine.com.ar`. Así que el camino
-es este:
+El navegador le pega **directo** a `https://api.cromeros.com.ar`. No hay intermediarios.
 
 ```
-navegador  ──HTTPS──>  card-collections-frontend.pages.dev
-                              │
-                              │  Function de Pages (functions/api/[[ruta]].js)
-                              │  agrega X-Dbz-Proxy y X-Forwarded-For
+navegador  ──HTTPS──>  api.cromeros.com.ar
+                              │   Cloudflare (DNS proxeado, modo Full)
                               ▼
-        vps-4240326-x.dattaweb.com/cartas-api   ──HTTP, SIN CIFRAR──
-                              │   (puerto 80, nginx del servidor)
-                              │   location /cartas-api/ -> 127.0.0.1:8081
-                              │
+                       Traefik en el 443 del VPS
+                              │   red `proxy` del swarm
                               ▼
                        la API  ──>  MySQL del servidor
 ```
 
-El front pide `/api` sobre su propio origen, así que la Function intercepta justo esas
-llamadas y **no hay CORS**: para el navegador es el mismo sitio.
+El front vive en `https://cromeros.com.ar` (Cloudflare Pages) y la API en un subdominio,
+así que **sí hay CORS**: el dominio del front tiene que estar en `DBZ_ORIGENES` o el
+navegador corta todo, y el error aparece del lado del front como si fuera un bug de ahí.
 
-**Por el nombre y no por la IP.** Cloudflare Workers rechaza los `fetch` a una IP pelada:
-devuelve un 403 con "error code: 1003" que no dice nada. Por eso `DBZ_API_ORIGEN` apunta a
-`vps-4240326-x.dattaweb.com`, el hostname que le da el proveedor, que resuelve al VPS. Si
-Dattaweb alguna vez lo cambia, esto se rompe y hay que actualizar la variable.
+El certificado del origen lo pone Traefik con su autofirmado, y Cloudflare lo acepta
+porque la zona está en modo **Full** — cifra, pero no valida el origen. Para *Full
+(strict)* habría que meterle un certificado propio a Traefik, y eso obliga a tocar el
+stack `edge`, que es de los clientes.
 
-**Por qué entra por el 80 y no por un puerto propio.** Hay dos listas de puertos que tienen
-que coincidir, y casi no se superponen:
+El router del stack va con `tls=true` y **sin** `certresolver`: el resolver `le` usa
+credenciales de la cuenta de Devgine y no puede validar un dominio de Angel.
 
-| | |
-|---|---|
-| Dattaweb deja entrar | 80, 443, 3000, 3306, 4000, 7000, 8081 |
-| Cloudflare deja salir | 80, 443, 8080, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096, 8443 |
-| En las dos | **sólo 80 y 443** |
+### Lo que había antes, para no reinventarlo
 
-Se probaron los once puertos de Cloudflare levantando escuchas reales en el servidor:
-Dattaweb los filtra todos. Así que el pedido entra por el 80, donde está nginx, y un
-`location /cartas-api/` lo baja al 8081 donde escucha la API. El bloque está en
-`/etc/nginx/sites-available/vps-4240326-x`, con una copia de seguridad al lado.
+Hasta el 2026-09-18, sin dominio propio, el camino era: el front pedía `/api` a sí mismo,
+una Function de Pages lo reenviaba al VPS **por HTTP sin cifrar** agregando una cabecera
+secreta, y entraba por un `location` de nginx al puerto 8081. Todo eso se fue cuando Angel
+compró `cromeros.com.ar`. **Nada de eso existe ya**: ni la Function, ni la cabecera
+secreta, ni el `location` de nginx, ni el puerto publicado.
 
-Es un `location` agregado a un archivo que ya existía: el `location /` quedó intacto, y se
-verificó con un A/B (configuración original vs. modificada) que el sitio que ya estaba ahí
-se comporta igual.
+Dos cosas de entonces que conviene no reinventar:
 
-**El tramo Cloudflare → VPS va sin cifrar.** Fue una decisión tomada a sabiendas, entre
-colgarse del dominio de un cliente, comprar un dominio propio, o esto. La cabecera
-secreta *autentica* a la Function contra la API — sin ella se contesta 404 a todo — pero
-**no cifra nada**: quien esté en el camino ve lo que pasa, claves de login incluidas.
-
-Por eso: **la clave de esta app tiene que ser única.** Ninguna que se repita en otro lado.
-
-Se arregla el día que haya un dominio: se le crea un registro A, Traefik le saca el
-certificado solo (el router ya está puesto en el stack, esperando), se saca el `ports:`
-y la Function pasa a hablarle por HTTPS — o desaparece y el front le pega directo.
+- **Cloudflare Workers no hace `fetch` a una IP pelada**: devuelve un 403 con
+  `error code: 1003` que no explica nada. Y sólo sale por ciertos puertos (80, 443, 8080,
+  8880, 2052…), que casi no se cruzan con los que deja entrar Dattaweb (80, 443, 3000,
+  3306, 4000, 7000, 8081). En las dos listas estaban **sólo el 80 y el 443**.
+- **El 8081 estaba ocupado y `ss` no lo decía.** El ingress del swarm intercepta el
+  tráfico externo con iptables antes de que llegue al socket, así que el puerto se veía
+  libre y en realidad `/etc/nginx/sites-enabled/nobis` lo tenía para el frontend de un
+  cliente. Del 12 al 18 de septiembre, quien entrara desde afuera a ese puerto caía en
+  esta API en vez del sitio del cliente.
 
 ## Despliegue
 

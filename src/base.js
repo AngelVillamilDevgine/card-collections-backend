@@ -84,7 +84,18 @@ export function conectar(url = urlDeConexion()) {
     connectionLimit: 10,
     // El servidor tiene 2 CPUs y varios back compartiendo el mismo MySQL: mejor
     // esperar que abrir conexiones sin límite.
-    queueLimit: 0,
+    //
+    // Pero esperar CON TECHO. `queueLimit: 0` es cola infinita: diez reemplazos de
+    // colección tomaban las diez conexiones y todo lo que llegaba después se apilaba
+    // para siempre, sin fallar nunca. Con techo, el pedido 71 se entera en el acto en
+    // vez de quedar colgado, y eso es lo que el front necesita para reintentar.
+    queueLimit: 60,
+    // Un TCP que no completa no puede quedarse tomando un lugar de la cola.
+    connectTimeout: 10000,
+    // El MySQL corta las conexiones ociosas por su cuenta (wait_timeout). Sin esto, la
+    // primera consulta después de un rato quieto sale por una conexión ya muerta.
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 30000,
     timezone: 'Z',
     charset: 'utf8mb4_unicode_ci',
   })
@@ -103,6 +114,29 @@ export function conectar(url = urlDeConexion()) {
   pool.on('connection', (conexion) => conexion.query("SET time_zone = '+00:00'"))
 
   return pool
+}
+
+/* Un pool aparte, de UNA conexión, sólo para el healthcheck.
+
+   El healthcheck decide si el swarm mata la tarea, y no puede decidirlo con la cola que
+   llenó el propio tráfico: diez reemplazos simultáneos dejaban a `/api/salud` esperando
+   turno, el swarm daba la tarea por muerta y la reiniciaba — justo cuando más carga
+   había, y dejando la app sin API en el peor momento. Con su conexión propia, la salud
+   contesta lo que de verdad importa para esa decisión: si el proceso llega al MySQL.
+
+   Una conexión de más sobre un pool de diez es barato al lado de un reinicio en falso. */
+export function conectarSalud(url = urlDeConexion()) {
+  return mysql.createPool({
+    uri: url,
+    waitForConnections: true,
+    connectionLimit: 1,
+    queueLimit: 4,
+    connectTimeout: 5000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 30000,
+    timezone: 'Z',
+    charset: 'utf8mb4_unicode_ci',
+  })
 }
 
 export async function prepararEsquema(pool) {

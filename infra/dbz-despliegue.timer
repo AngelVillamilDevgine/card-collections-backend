@@ -1,11 +1,17 @@
 [Unit]
-Description=Mirar cada dos minutos si hay que desplegar la API de cartas
+Description=Mirar cada cinco minutos si hay que desplegar la API de cartas
 
 [Timer]
 OnBootSec=2min
-# Se cuenta desde que arrancó la vuelta anterior. Si un deploy tarda más de dos minutos,
-# systemd no larga otra vuelta encima: espera a que termine.
-OnUnitActiveSec=2min
+# Se cuenta desde que arrancó la vuelta anterior. Si un deploy tarda más que el
+# intervalo, systemd no larga otra vuelta encima: espera a que termine.
+#
+# Cinco y no dos: cada vuelta gasta una llamada de la cuota de GitHub, que sin token
+# son 60 por hora y son POR IP, o sea compartidas con todo lo que corre en el VPS.
+# Con dos minutos este timer se comía 30 de 60 él solo. Con cinco son 12, y quedan
+# 48 para el resto de la máquina. Lo que se paga es que un deploy puede tardar hasta
+# tres minutos más en arrancar, y no hay nadie esperándolo.
+OnUnitActiveSec=5min
 AccuracySec=15s
 
 [Install]
