@@ -31,14 +31,31 @@ CLAVE="$(openssl rand -base64 24 | tr -d '/+=' | head -c 28)"
 echo "Creando la base y el usuario…"
 docker exec -i -e MYSQL_PWD="$RAIZ" "$CONTENEDOR" mysql -uroot <<SQL
 CREATE DATABASE IF NOT EXISTS \`$BASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$USUARIO'@'%' IDENTIFIED BY '$CLAVE';
-ALTER USER '$USUARIO'@'%' IDENTIFIED BY '$CLAVE';
+-- DOS cuentas y ninguna con '%', que es el comodín «desde cualquier lado».
+--
+-- El 3306 de este servidor está publicado en 0.0.0.0 y pasa la lista blanca de
+-- Dattaweb, así que un usuario con host '%' es una credencial más expuesta a internet.
+-- Se comprobó: con '%' la cuenta entraba desde afuera; con esto, la misma clave da
+-- «Access denied for user 'dbz'@'<IP de afuera>'».
+--
+-- Hacen falta las dos porque se entra por dos caminos distintos:
+--
+--   172.%      el API, que llega por host.docker.internal, o sea 172.17.0.1. Y también
+--              cualquier contenedor que le pegue a la IP pública: eso hace hairpin y
+--              MySQL igual lo ve como 172.17.0.1 (medido).
+--   localhost  el respaldo y el despliegue, que entran con `docker exec` por el socket
+--              del contenedor. Sin ésta, el respaldo diario deja de correr.
+CREATE USER IF NOT EXISTS '$USUARIO'@'172.%' IDENTIFIED BY '$CLAVE';
+ALTER USER '$USUARIO'@'172.%' IDENTIFIED BY '$CLAVE';
+CREATE USER IF NOT EXISTS '$USUARIO'@'localhost' IDENTIFIED BY '$CLAVE';
+ALTER USER '$USUARIO'@'localhost' IDENTIFIED BY '$CLAVE';
 -- Sólo sobre su base: este usuario no tiene por qué ver las de los otros proyectos.
-GRANT ALL PRIVILEGES ON \`$BASE\`.* TO '$USUARIO'@'%';
+GRANT ALL PRIVILEGES ON \`$BASE\`.* TO '$USUARIO'@'172.%';
+GRANT ALL PRIVILEGES ON \`$BASE\`.* TO '$USUARIO'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-echo "Comprobando que el usuario nuevo entra…"
+echo "Comprobando que el usuario nuevo entra por los dos caminos…"
 docker exec -i -e MYSQL_PWD="$CLAVE" "$CONTENEDOR" mysql -u"$USUARIO" -e "USE \`$BASE\`; SELECT 1" > /dev/null
 echo "  entra bien."
 

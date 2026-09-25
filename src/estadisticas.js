@@ -11,6 +11,13 @@
    tenga cargadas las tablas de husos (los desplazamientos numéricos andan siempre). */
 const aca = (col) => `CONVERT_TZ(${col}, '+00:00', '-03:00')`
 
+/* Cuánta gente entra en la tabla de «uno por uno». No es por el motor —se midió, y lo
+   que cuesta es recorrer `carta`, que hay que recorrer igual— sino por lo que viaja:
+   con 1000 cuentas la respuesta pasaba de 112 KB, y el panel lo abre alguien desde el
+   teléfono. Con 200 son 22 KB. Arriba de eso, la tabla deja de ser una lista que se mira
+   y pasa a ser una que se busca, y para eso haría falta otra cosa. */
+const TOPE_GENTE = 200
+
 /* Number() a propósito: MySQL devuelve los SUM() como texto, porque son DECIMAL, y
    entonces 2 no es igual a '2' del otro lado. */
 async function una(pool, sql, args = []) {
@@ -120,17 +127,33 @@ export async function resumen(pool) {
       GROUP BY tramo ORDER BY orden`
   )
 
+  /* Las visitas se agregan UNA vez y se pegan, en vez de tres subconsultas correlacionadas
+     por usuario. Medido con 1000 cuentas y 200.000 cartas: 229.002 filas leídas contra
+     213.007, y 53 ms contra 43.
+
+     Vale aclararlo porque la auditoría decía «2M de filas escaneadas» y eso NO es lo que
+     pasa: las subconsultas caían sobre la primaria de `visita`, que empieza por
+     usuario_id, así que costaban poco. Lo que domina es recorrer `carta` entera para
+     contar por usuario, y eso hay que hacerlo igual — se probó con un índice angosto
+     (usuario_id, cantidad) y lee exactamente las mismas filas.
+
+     O sea que lo que de verdad crecía sin techo no era el motor: era la respuesta. */
   const [gente] = await pool.query(
     `SELECT u.usuario,
             DATE_FORMAT(${aca('u.creado')}, '%Y-%m-%d') alta,
-            COUNT(c.clave) cartas,
-            COALESCE(SUM(c.cantidad - 1), 0) repetidas,
-            (SELECT DATE_FORMAT(MAX(v.dia), '%Y-%m-%d') FROM visita v WHERE v.usuario_id = u.id) ultima,
-            (SELECT COUNT(*) FROM visita v WHERE v.usuario_id = u.id) dias,
-            (SELECT MAX(v.app) FROM visita v WHERE v.usuario_id = u.id) app
-       FROM usuario u LEFT JOIN carta c ON c.usuario_id = u.id
-      GROUP BY u.id
-      ORDER BY cartas DESC, u.creado DESC`
+            COALESCE(k.cartas, 0) cartas,
+            COALESCE(k.repetidas, 0) repetidas,
+            DATE_FORMAT(v.ultima, '%Y-%m-%d') ultima,
+            COALESCE(v.dias, 0) dias,
+            COALESCE(v.app, 0) app
+       FROM usuario u
+       LEFT JOIN (SELECT usuario_id, COUNT(*) cartas, COALESCE(SUM(cantidad - 1), 0) repetidas
+                    FROM carta GROUP BY usuario_id) k ON k.usuario_id = u.id
+       LEFT JOIN (SELECT usuario_id, MAX(dia) ultima, COUNT(*) dias, MAX(app) app
+                    FROM visita GROUP BY usuario_id) v ON v.usuario_id = u.id
+      ORDER BY cartas DESC, u.creado DESC
+      LIMIT ?`,
+    [TOPE_GENTE]
   )
 
   return {
@@ -145,6 +168,12 @@ export async function resumen(pool) {
     cartas: { total: cartas, repetidas },
     porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
     tramos: tramos.map((f) => ({ tramo: f.tramo, cuantos: Number(f.cuantos) })),
+    /* Cuánta gente hay en total, aparte de cuánta entró en la tabla. El panel lo
+       necesita para no mentir cuando la lista viene cortada: los renglones que dicen
+       «28 cuentas · 13 con cartas» salen de los números de arriba, no de contar filas
+       de la tabla. Es la misma lección del #97 — una tabla que muestra una parte no
+       puede ser la fuente de un total. */
+    tope: TOPE_GENTE,
     gente: gente.map((f) => ({
       usuario: f.usuario,
       alta: f.alta,
