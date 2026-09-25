@@ -110,6 +110,21 @@ Dos cosas de entonces que conviene no reinventar:
 
 ## Despliegue
 
+**El Dockerfile lo aprueba el servidor.** Es el único archivo de este repo que se ejecuta
+con privilegios en la máquina —como root, y desde una red que alcanza las bases de los
+clientes—, así que no se toma del commit a ciegas: el servidor guarda la huella del que
+aprobó en `/etc/dbz-dockerfile.sha256` y, si la del commit no es esa, **no construye y
+avisa**. Cambiar el Dockerfile es entonces dos pasos, a propósito:
+
+```
+    # 1. pushear el cambio como siempre
+    # 2. en el servidor, después de mirarlo:
+    sha256sum Dockerfile | cut -d' ' -f1 > /etc/dbz-dockerfile.sha256
+```
+
+Mientras tanto el deploy queda parado y el panel de números lo muestra.
+
+
 El VPS es **producción de Devgine con proyectos de clientes andando**. Todo lo de acá es
 aditivo: un stack, dos secrets del swarm, un `location` en nginx y un timer. No toca
 `edge`, `nobis-panel`, `nobis-pd-calculator` ni `supervisor-comercio`.
