@@ -92,12 +92,28 @@ export function revisarCarta(cuerpo) {
    once caracteres, así que sobra. */
 export const claveValida = (clave) => /^[a-z0-9-]{1,34}:\d{1,5}$/.test(clave)
 
-/* Tope de filas de un reemplazo. La colección entera son 1936; el margen es para que un
-   catálogo que crezca no choque. Con el `bodyLimit` de 2 MB entran más de 139.000 claves
-   de formato válido en un solo pedido, y no había nada que lo impidiera: una cuenta
-   gratuita —el registro es abierto— podía dejar millones de filas en el MySQL que
-   comparten los proyectos de clientes. */
-export const TOPE_CARTAS = 2200
+/* Tope de filas de un reemplazo. Con el `bodyLimit` de 2 MB entran más de 139.000 claves
+   de formato válido en un solo pedido, y sin techo una cuenta gratuita —el registro es
+   abierto— podía dejar millones de filas en el MySQL que comparten los clientes.
+
+   EL NÚMERO NO PERSIGUE AL CATÁLOGO, Y ESO ES A PROPÓSITO. Estaba en 2200 «porque la
+   colección son 1936», y eso lo convierte en un segundo lugar donde vive el tamaño del
+   catálogo — el mismo error que se sacó de `estadisticas.js` con el `TOTAL_CARTAS = 1936`.
+   Peor: el catálogo se edita en caliente, sin deploy y sin ningún test que mire esto, así
+   que el día que crezca el techo lo alcanza en silencio y lo primero que se rompe es
+   «Restaurar una copia», el único camino de recuperación, justo cuando hace falta.
+
+   Así que está elegido contra lo que de verdad cuesta: la transacción. Medido contra
+   MySQL 9 con el esquema real (contenedor local, más rápido que el VPS — escalá x3 para
+   estimar producción):
+
+       1936 filas   128 ms        10.000 filas   330 ms
+       5000 filas   161 ms        20.000 filas   660 ms
+
+   Y lo que importaba más: mientras corre un reemplazo de 10.000 filas, **otra conexión
+   escribiendo en OTRA cuenta espera 35 ms**. InnoDB traba por fila y las filas van por
+   `usuario_id`, así que esto no le pisa la base a nadie. */
+export const TOPE_CARTAS = 10000
 
 /* Las tres guardas del único camino de toda la app que borra en masa, juntas y en un solo
    lugar.
@@ -118,7 +134,7 @@ export function revisarReemplazo(cuerpo) {
   const claves = Object.keys(cantidades)
 
   if (claves.length > TOPE_CARTAS)
-    return `Son demasiadas cartas: ${claves.length}. La colección entera son 1936.`
+    return `Son demasiadas cartas: ${claves.length}.`
 
   /* Clave por clave ANTES de contar, y el orden importa: con la cuenta primero, un archivo
      con `{"exp-1:1": -3}` contestaba «esta copia no tiene ninguna carta» — verdad, pero

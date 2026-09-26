@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { conectar, prepararEsquema } from '../src/base.js'
 import { crearApp } from '../src/servidor.js'
 import { olvidarVisitas } from '../src/estadisticas.js'
-import { reemplazar } from '../src/coleccion.js'
+import { reemplazar, TOPE_CARTAS } from '../src/coleccion.js'
 
 const URL = process.env.DBZ_MYSQL_URL_TEST
   ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
@@ -366,15 +366,32 @@ test('el reemplazo masivo tampoco acepta cantidades basura', async () => {
 /* Con el bodyLimit de 2 MB entran mas de 139.000 claves de formato valido en un solo
    pedido, y no habia nada que lo impidiera: una cuenta podia dejar millones de filas en
    el MySQL que comparten los proyectos de clientes. */
-test('un reemplazo con muchas más cartas que el catálogo se rechaza', async () => {
+/* El número sale de TOPE_CARTAS y no está escrito a mano, que era justo el problema: el
+   test decía 3000 «porque el catálogo son 1936» y el día que el catálogo creció se puso
+   rojo pidiendo que se rechazara algo que ahora tiene que entrar. */
+test('un reemplazo que se pasa del tope se rechaza', async () => {
   const token = await registrar('bulma@ejemplo.com')
   const cantidades = {}
-  for (let n = 1; n <= 3000; n++) cantidades[`exp-1:${n}`] = 1
+  for (let n = 1; n <= TOPE_CARTAS + 1; n++) cantidades[`exp-1:${n}`] = 1
   const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
                           payload: { estados: {}, cantidades } })
   assert.equal(r.statusCode, 400, r.body)
   assert.match(r.json().error, /demasiadas/i)
-  // Que 1936 —la colección entera— siga entrando lo cubre el test de más abajo.
+})
+
+/* Las DOS colecciones juntas son 1936 + 1097 = 3033 claves, y eso tiene que entrar: si no,
+   el día que alguien restaure un respaldo completo se encuentra con que el único camino de
+   recuperación contesta 400. Este test es el que frena a quien baje el tope sin pensarlo. */
+test('las dos colecciones juntas entran en un solo reemplazo', async () => {
+  const token = await registrar('trunks@ejemplo.com')
+  const cantidades = {}
+  for (let n = 1; n <= 1936; n++) cantidades[`exp-1:${n}`] = 1
+  for (let n = 1; n <= 1097; n++) cantidades[`ley-1:${n}`] = 1
+  assert.equal(Object.keys(cantidades).length, 3033)
+  const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
+                          payload: { estados: {}, cantidades } })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.equal(r.json().cartas, 3033)
 })
 
 test('la sesión de MySQL está en UTC, que es lo que las estadísticas dan por sentado', async () => {
