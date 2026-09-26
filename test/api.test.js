@@ -200,7 +200,16 @@ test('un reemplazo sin cartas se rechaza y no toca nada de lo que había', async
   await pedir({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 2, estado: 'bien' } })
   await pedir({ method: 'PUT', url: '/api/cartas/exp-1:2', headers: auth(token), payload: { cantidad: 1, estado: 'perfecta' } })
 
-  for (const cuerpo of [{ estados: {}, cantidades: {} }, { cantidades: {} }]) {
+  /* Los dos primeros son los de siempre. El TERCERO es el que se colaba: claves validas,
+     todas en cero. La guarda contaba CLAVES, asi que pasaba entero; despues reemplazar()
+     filtra por n > 0 y no inserta nada, o sea que borraba todo y contestaba 200 con
+     cartas: 0. Esta es la unica capa que protege si el front tiene un bug, y no protegia
+     de esto. */
+  for (const cuerpo of [
+    { estados: {}, cantidades: {} },
+    { cantidades: {} },
+    { cantidades: { 'exp-1:1': 0, 'exp-1:2': 0, 'exp-4:500': 0 } },
+  ]) {
     const r = await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token), payload: cuerpo })
     assert.equal(r.statusCode, 400, `tendría que rechazarlo: ${r.body}`)
   }

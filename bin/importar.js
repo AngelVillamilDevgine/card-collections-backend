@@ -57,9 +57,14 @@ const mal = revisarReemplazo(datos)
 if (mal) await salir(`${mal}\nNo se tocó nada.`)
 
 /* Los números antes de preguntar, igual que en la app: «vas a perder 89» se entiende,
-   «¿estás seguro?» no dice nada. */
-const antes = Object.keys((await leer(pool, id)).cantidades).length
-const trae = Object.keys(datos.cantidades).length
+   «¿estás seguro?» no dice nada.
+
+   Se cuentan CARTAS y no claves, por lo mismo que `revisarReemplazo`: una clave con
+   cantidad 0 no es una carta, y contándolas el aviso mentía sobre las dos puntas
+   —«esta copia trae 2» cuando trae 0, y «perdés 1» cuando perdés 3—. */
+const cartasDe = (c) => Object.values(c || {}).filter((n) => Number(n) > 0)
+const antes = cartasDe((await leer(pool, id)).cantidades).length
+const trae = cartasDe(datos.cantidades).length
 if (antes && process.env.DBZ_PISAR !== '1') {
   const pierde = antes - trae
   await salir(
@@ -70,7 +75,7 @@ if (antes && process.env.DBZ_PISAR !== '1') {
 }
 
 const cartas = await reemplazar(pool, id, datos)
-const sobrantes = Object.values(datos.cantidades).reduce((a, n) => a + (n - 1), 0)
+const sobrantes = cartasDe(datos.cantidades).reduce((a, n) => a + (Number(n) - 1), 0)
 
 console.log(`Listo: ${cartas} cartas para "${usuario}" (${sobrantes} repetidas).`)
 await pool.end()

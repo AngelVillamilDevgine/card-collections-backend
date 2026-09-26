@@ -52,6 +52,18 @@ test('revisarReemplazo no deja pasar un reemplazo de cero cartas', () => {
   assert.match(mal, /ninguna carta/)
 })
 
+/* El caso que la guarda NO tapaba: claves válidas, todas en cero.
+   Contando claves pasaba entero -- `revisarCarta` acepta la cantidad 0 a propósito, que es
+   la que borra una carta sola -- y después `reemplazar()` filtra por `n > 0` y no inserta
+   nada. O sea: borraba la colección entera y contestaba 200 con `cartas: 0`. Verificado por
+   los dos caminos contra la base de prueba antes de arreglarlo. */
+test('revisarReemplazo cuenta CARTAS y no claves: todas en cero no es una copia', () => {
+  assert.match(revisarReemplazo({ cantidades: { 'exp-1:1': 0, 'exp-1:2': 0 } }), /ninguna carta/)
+  assert.match(revisarReemplazo({ cantidades: { 'exp-1:1': 0 } }), /ninguna carta/)
+  // Una sola carta de verdad entre muchos ceros alcanza: no es el archivo equivocado.
+  assert.equal(revisarReemplazo({ cantidades: { 'exp-1:1': 0, 'exp-1:2': 1 } }), null)
+})
+
 test('revisarReemplazo no deja pasar más del tope', () => {
   const cantidades = {}
   for (let i = 0; i <= TOPE_CARTAS; i++) cantidades[`exp-1:${i}`] = 1

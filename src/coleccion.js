@@ -120,12 +120,10 @@ export function revisarReemplazo(cuerpo) {
   if (claves.length > TOPE_CARTAS)
     return `Son demasiadas cartas: ${claves.length}. La colección entera son 1936.`
 
-  /* Un reemplazo sin NINGUNA carta no es un caso de uso: es el síntoma de que el archivo
-     que eligieron no era una copia. Antes contestaba 200 y borraba todo. Si alguna vez
-     hace falta un «empezar de cero», que vaya por su propio camino y a propósito. */
-  if (!claves.length)
-    return 'Esa copia no tiene ninguna carta. No se cambió nada de tu colección.'
-
+  /* Clave por clave ANTES de contar, y el orden importa: con la cuenta primero, un archivo
+     con `{"exp-1:1": -3}` contestaba «esta copia no tiene ninguna carta» — verdad, pero
+     manda a mirar donde no está el problema. El -3 no es un archivo vacío: es un archivo
+     roto, y hay que decirlo. */
   for (const clave of claves) {
     if (!claveValida(clave)) return `Clave inválida: ${clave}`
     /* Las cantidades se validan igual que en el PUT de una carta sola. Antes este camino
@@ -136,6 +134,20 @@ export function revisarReemplazo(cuerpo) {
     const mala = revisarCarta({ cantidad: cantidades[clave], estado: estados[clave] ?? null })
     if (mala) return `${clave}: ${mala}`
   }
+
+  /* Un reemplazo sin NINGUNA carta no es un caso de uso: es el síntoma de que el archivo
+     que eligieron no era una copia. Antes contestaba 200 y borraba todo. Si alguna vez
+     hace falta un «empezar de cero», que vaya por su propio camino y a propósito.
+
+     SE CUENTAN LAS CARTAS, NO LAS CLAVES, y esa distinción es todo el arreglo. Contando
+     claves, un archivo como `{"cantidades":{"exp-1:1":0,"exp-1:2":0}}` pasaba las tres
+     capas: las claves son válidas y `revisarCarta` acepta la cantidad 0 a propósito
+     —es la que borra una carta sola—. Después `reemplazar()` filtra por `n > 0` y no
+     inserta nada, así que borraba la colección entera y contestaba 200 con `cartas: 0`.
+     O sea: la única capa que protege aunque el front tenga un bug no protegía de esto. */
+  if (!claves.some((c) => Number(cantidades[c]) > 0))
+    return 'Esa copia no tiene ninguna carta. No se cambió nada de tu colección.'
+
   return null
 }
 

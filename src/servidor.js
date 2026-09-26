@@ -21,9 +21,6 @@ const DIRECCION = process.env.DBZ_DIRECCION ?? '0.0.0.0'
 // pedirle a esta API. Sin esto el navegador corta el pedido.
 /* Quién ve las estadísticas. Por variable y no por una columna en la base: hay un solo
    admin, y así se saca a alguien sin tocar datos. */
-/* Cuántas cartas se aceptan como mucho en un reemplazo. El catálogo son 1936; el margen
-   deja lugar para una expansión nueva sin tener que tocar esto. */
-
 const ADMINS = (process.env.DBZ_ADMINS ?? '')
   .split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)
 
