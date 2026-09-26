@@ -10,8 +10,18 @@
 #
 # Usa root del MySQL porque hay que crear y borrar una base: el usuario `dbz` sólo tiene
 # permisos sobre la suya. Por eso NO se instala como servicio ni queda en la máquina.
-set -uo pipefail
+# `-e` NO es opcional, y su ausencia era el peor defecto de este script: su UNICO
+# trabajo es contestar «¿la copia sirve?» y su modo de falla devolvia la respuesta mas
+# tranquilizadora posible. Con la clave mal escrita, cada consulta fallaba en silencio
+# —el `2>/dev/null` de MY() se comia el error—, el `zcat | MY` fallaba, se imprimia
+# «hecho» igual, las consultas de diferencias no devolvian nada porque no corrian, y la
+# ultima linea decia «si no aparece ninguna linea de distintos, es que coinciden
+# exactamente». Todo verde sin haber restaurado nada, y saliendo con codigo 0.
+set -euo pipefail
 M=mysql-db
+
+# Y que se note si se corta a la mitad: sin esto, `set -e` sale callado.
+trap 'echo ""; echo "FALLO en la linea $LINENO. NO se probo nada: no tomes esto como que la copia sirve." >&2' ERR
 
 # La clave se pide por teclado y no se escribe en ningún lado: este archivo vive en un
 # repo PÚBLICO. `read -rsp` tampoco la deja en el historial del shell.
@@ -20,7 +30,9 @@ echo
 export MYSQL_PWD="$CLAVE"   # así no aparece en `ps`
 unset CLAVE
 
-MY() { docker exec -i -e MYSQL_PWD "$M" mysql -uroot "$@" 2>/dev/null; }
+# El stderr YA NO se tira: era lo unico que iba a decir «access denied». Se filtra
+# solamente el aviso de que la clave va por variable de entorno, que es ruido conocido.
+MY() { docker exec -i -e MYSQL_PWD "$M" mysql -uroot "$@" 2> >(grep -v 'Using a password on the command line' >&2); }
 COPIA=$(ls -1t /var/backups/dbz/dbz_cromeros-*.sql.gz | head -1)
 echo "probando: $(basename "$COPIA")"
 
