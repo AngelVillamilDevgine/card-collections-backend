@@ -62,6 +62,9 @@ const TABLAS = [
      clave      VARCHAR(40)      NOT NULL,
      cantidad   SMALLINT UNSIGNED NOT NULL,
      estado     VARCHAR(12)      NULL,
+     -- Cuándo se tocó por última vez. Ver addMarkedAt() para por qué existe y por qué
+     -- las filas anteriores a la migración quedan en NULL.
+     marked_at  TIMESTAMP        NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
      PRIMARY KEY (usuario_id, clave),
      CONSTRAINT carta_de_usuario FOREIGN KEY (usuario_id)
        REFERENCES usuario(id) ON DELETE CASCADE
@@ -143,6 +146,7 @@ export async function prepararEsquema(pool) {
   for (const sql of TABLAS) await pool.query(sql)
   await ensancharUsuario(pool)
   await columnaApp(pool)
+  await addMarkedAt(pool)
   await sembrarVisitas(pool)
 }
 
@@ -156,6 +160,41 @@ async function columnaApp(pool) {
   )
   if (!filas.length)
     await pool.query('ALTER TABLE visita ADD COLUMN app TINYINT UNSIGNED NOT NULL DEFAULT 0')
+}
+
+/* Cuándo se tocó cada carta por última vez.
+
+   Hasta ahora `carta` no tenía ninguna fecha, así que **era imposible saber cuántas cartas
+   se marcaron un día**. Lo único que había era `visita`, que dice «entró» pero no cuánto
+   hizo: alguien que abre la app y no toca nada y alguien que carga doscientas cartas
+   contaban exactamente igual. Es la métrica de actividad que más dice sobre si la app
+   sirve, y no existía.
+
+   Se agrega ahora aunque el panel todavía no la muestre, porque esto **sólo se llena
+   hacia adelante**: cada día que pasa sin la columna es un día que no se recupera nunca.
+
+   Dos decisiones del cómo:
+
+   - `DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` y no un valor que mande el
+     código: el upsert de cada toque ya existe y no hay que tocarlo, así que esto no
+     agrega ni una escritura al camino caliente. Una carta que se vuelve a guardar con el
+     mismo número no cuenta como cambio y no mueve la fecha, que es lo correcto.
+   - Las filas que YA existían quedan en `NULL`, no en la fecha de hoy. El `ALTER` las
+     pondría a todas en este instante y el panel diría que las 7885 cartas se marcaron el
+     día que se corrió la migración, que es mentira. `NULL` quiere decir «no sabemos», que
+     es la verdad. Por eso el UPDATE de abajo, que corre UNA sola vez: una asignación
+     explícita le gana al `ON UPDATE`, así que no se pisa sola. */
+async function addMarkedAt(pool) {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'carta' AND COLUMN_NAME = 'marked_at'`
+  )
+  if (rows.length) return
+  await pool.query(
+    `ALTER TABLE carta ADD COLUMN marked_at TIMESTAMP NULL
+       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`
+  )
+  await pool.query('UPDATE carta SET marked_at = NULL')
 }
 
 /* `visita` nació vacía, con la app andando hace una semana. Lo que ya se sabía de

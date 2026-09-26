@@ -588,3 +588,38 @@ test('todas las respuestas llevan HSTS, salgan bien o mal', async () => {
   }
 })
 
+
+/* `carta` no tenía ninguna fecha, así que no se podía saber cuántas cartas se marcaron un
+   día: alguien que abre la app y no toca nada y alguien que carga doscientas contaban
+   igual en `visita`. La columna se llena sola con el upsert que ya existía —cero
+   escrituras de más en el camino caliente— y las filas anteriores a la migración quedan
+   en NULL, que es la verdad, en vez de todas con la fecha del día que se migró. */
+test('cada carta guarda cuándo se tocó, y se actualiza al volver a tocarla', async () => {
+  const token = await registrar('ten@ejemplo.com')
+  await pedir({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 1, estado: 'bien' } })
+
+  const [[fila]] = await pool.query("SELECT marked_at, TIMESTAMPDIFF(SECOND, marked_at, NOW()) hace FROM carta WHERE clave = 'exp-1:1'")
+  assert.ok(fila.marked_at, 'una carta recién guardada tiene fecha')
+  assert.ok(fila.hace >= 0 && fila.hace < 60, `la fecha tiene que ser de recién, y fue de hace ${fila.hace}s`)
+
+  // Volver a guardarla con OTRO número mueve la fecha.
+  await pool.query("UPDATE carta SET marked_at = NOW() - INTERVAL 3 DAY WHERE clave = 'exp-1:1'")
+  await pedir({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 4, estado: 'bien' } })
+  const [[despues]] = await pool.query("SELECT TIMESTAMPDIFF(SECOND, marked_at, NOW()) hace FROM carta WHERE clave = 'exp-1:1'")
+  assert.ok(despues.hace < 60, 'tocarla de nuevo tiene que mover la fecha')
+
+  // Y guardarla con el MISMO número no es un cambio: la fecha no se mueve.
+  await pool.query("UPDATE carta SET marked_at = NOW() - INTERVAL 3 DAY WHERE clave = 'exp-1:1'")
+  await pedir({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(token), payload: { cantidad: 4, estado: 'bien' } })
+  const [[igual]] = await pool.query("SELECT TIMESTAMPDIFF(DAY, marked_at, NOW()) dias FROM carta WHERE clave = 'exp-1:1'")
+  assert.equal(igual.dias, 3, 'guardar lo mismo no cuenta como tocarla')
+})
+
+test('el reemplazo masivo también deja fecha', async () => {
+  const token = await registrar('yajirobe@ejemplo.com')
+  await pedir({ method: 'PUT', url: '/api/coleccion', headers: auth(token),
+                payload: { estados: {}, cantidades: { 'exp-1:1': 1, 'exp-1:2': 2 } } })
+  const [filas] = await pool.query('SELECT marked_at FROM carta')
+  assert.equal(filas.length, 2)
+  assert.ok(filas.every((f) => f.marked_at), 'las dos tienen que tener fecha')
+})
