@@ -91,3 +91,85 @@ export function revisarCarta(cuerpo) {
    34 + ':' + 5 dígitos = 40 justos, y el id de expansión más largo del catálogo tiene
    once caracteres, así que sobra. */
 export const claveValida = (clave) => /^[a-z0-9-]{1,34}:\d{1,5}$/.test(clave)
+
+/* Tope de filas de un reemplazo. La colección entera son 1936; el margen es para que un
+   catálogo que crezca no choque. Con el `bodyLimit` de 2 MB entran más de 139.000 claves
+   de formato válido en un solo pedido, y no había nada que lo impidiera: una cuenta
+   gratuita —el registro es abierto— podía dejar millones de filas en el MySQL que
+   comparten los proyectos de clientes. */
+export const TOPE_CARTAS = 2200
+
+/* Las tres guardas del único camino de toda la app que borra en masa, juntas y en un solo
+   lugar.
+
+   Estaban adentro de la ruta `PUT /api/coleccion`, y por eso `bin/importar.js` —que llama
+   a `reemplazar()` directo, sin pasar por HTTP— no tenía NINGUNA de las tres. Justamente
+   la herramienta que se usa para recuperar un respaldo era la que menos miraba lo que le
+   daban: un `null`, un `[]` o el json de cualquier otra cosa borraba la colección entera
+   y contestaba «Listo: 0 cartas». Separadas, se arregla una y la otra queda.
+
+   Devuelve el texto del problema, o `null` si está bien. El texto es el mismo que
+   contesta la API, así que el que restaura desde el navegador y el que corre el script
+   leen lo mismo. */
+export function revisarReemplazo(cuerpo) {
+  const objeto = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
+  const cantidades = objeto(cuerpo?.cantidades)
+  const estados = objeto(cuerpo?.estados)
+  const claves = Object.keys(cantidades)
+
+  if (claves.length > TOPE_CARTAS)
+    return `Son demasiadas cartas: ${claves.length}. La colección entera son 1936.`
+
+  /* Un reemplazo sin NINGUNA carta no es un caso de uso: es el síntoma de que el archivo
+     que eligieron no era una copia. Antes contestaba 200 y borraba todo. Si alguna vez
+     hace falta un «empezar de cero», que vaya por su propio camino y a propósito. */
+  if (!claves.length)
+    return 'Esa copia no tiene ninguna carta. No se cambió nada de tu colección.'
+
+  for (const clave of claves) {
+    if (!claveValida(clave)) return `Clave inválida: ${clave}`
+    /* Las cantidades se validan igual que en el PUT de una carta sola. Antes este camino
+       —el que reemplaza TODO— sólo hacía Number(n) y filtraba n > 0: un -3 o un "hola"
+       desaparecían sin decir nada, un 1.7 se redondeaba y un 999999999 se pasaba del
+       SMALLINT y salía por un 500 que no explicaba nada. El camino peligroso validaba
+       menos que el seguro. */
+    const mala = revisarCarta({ cantidad: cantidades[clave], estado: estados[clave] ?? null })
+    if (mala) return `${clave}: ${mala}`
+  }
+  return null
+}
+
+/* Devuelve `null` si el archivo NO es una copia de la colección, en vez de inventar una
+   vacía. Es el mismo criterio que `normalizar` en frontend/src/almacenamiento.js: están
+   duplicados porque son dos repos y no hay forma de compartir el módulo. Si se toca uno,
+   tocar el otro — y hay tests de los dos lados.
+
+   Sigue leyendo las tres formas históricas, porque un respaldo puede ser viejo. */
+export function normalizarCopia(datos) {
+  const esMapa = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+  if (!esMapa(datos)) return null
+
+  // La forma de hoy: { estados, cantidades }.
+  if (esMapa(datos.cantidades))
+    return { estados: esMapa(datos.estados) ? datos.estados : {}, cantidades: datos.cantidades }
+
+  // Una anterior: { estados, repetidas }, donde "repetidas" eran las que SOBRABAN.
+  if (esMapa(datos.estados)) {
+    const cantidades = {}
+    for (const clave of Object.keys(datos.estados))
+      cantidades[clave] = 1 + (datos.repetidas?.[clave] ?? 0)
+    return { estados: datos.estados, cantidades }
+  }
+
+  /* La más vieja: un mapa de estados suelto. Se reconoce porque TODAS sus claves tienen
+     forma de carta; si alguna no, es otro archivo cualquiera y no se toca nada. Sin esta
+     condición, un package.json entraba como colección válida. */
+  const claves = Object.keys(datos)
+  if (claves.length && claves.every(claveValida)) {
+    const cantidades = {}
+    for (const clave of claves) cantidades[clave] = 1
+    return { estados: datos, cantidades }
+  }
+
+  return null
+}
