@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Copia diaria de la base de las cartas.
 #
-# SÓLO de `dbz_cromeros`: las cuatro tablas de este proyecto (usuario, carta, sesion,
-# visita). No toca las bases de los otros proyectos del servidor, ni MongoDB, ni nada
-# más de la máquina.
+# SÓLO de `dbz_cromeros`, entera. No toca las bases de los otros proyectos del servidor,
+# ni MongoDB, ni nada más de la máquina.
+#
+# CUÁNTAS TABLAS TIENE LA BASE NO SE ESCRIBE ACÁ: se le pregunta a la base. Acá decía
+# «las cuatro tablas (usuario, carta, sesion, visita)» y el esquema crea CINCO desde el
+# 2026-09-20 — le agregaron `salud` el mismo día que nació este respaldo, y el número
+# nunca se subió. Una lista escrita a mano se queda corta sola, y cuando se queda corta
+# baja el listón del control sin que nadie se entere.
 #
 # La corre dbz-respaldo.timer, una vez por día. Log: journalctl -u dbz-respaldo
 #
@@ -17,7 +22,6 @@ set -euo pipefail
 BASE=dbz_cromeros
 DESTINO=/var/backups/dbz
 DIAS=30                          # cuántos días de copias se guardan
-TABLAS_ESPERADAS=4
 MINIMO=5000                      # bytes; el volcado real ronda los 20 KB
 CREDENCIALES=/etc/dbz-respaldo.cnf
 
@@ -63,16 +67,30 @@ fi
 # Que el volcado SIRVA, no sólo que exista. Un archivo vacío o cortado a la mitad es peor
 # que no tener nada: parece que hay copia, y no hay. Por eso se escribe como .parcial y
 # recién se le pone el nombre bueno si pasa el control.
+#
+# Y el control compara NOMBRES, no una cantidad. Contando «hay al menos N tablas», el día
+# que el esquema sume una, el número viejo sigue dando verdadero con una tabla de menos
+# adentro. Preguntando cuáles hay y mirando que estén todas, eso no puede pasar: una tabla
+# nueva entra sola al control.
 TAMANO=$(stat -c%s "$PARCIAL")
-TABLAS=$(zcat "$PARCIAL" | grep -c '^CREATE TABLE' || true)
-if [ "$TAMANO" -lt "$MINIMO" ] || [ "$TABLAS" -lt "$TABLAS_ESPERADAS" ]; then
-  decir "el volcado no sirve: $TAMANO bytes y $TABLAS tablas (esperaba $TABLAS_ESPERADAS). No lo guardo."
+ESPERADAS=$(docker exec -i "$MYSQL" mysql --defaults-extra-file=/dev/stdin \
+              -N -B -e "SHOW TABLES FROM \`$BASE\`" < "$CREDENCIALES" 2>/dev/null | sort)
+EN_LA_COPIA=$(zcat "$PARCIAL" | sed -n 's/^CREATE TABLE `\([^`]*\)`.*/\1/p' | sort)
+FALTAN=$(comm -23 <(echo "$ESPERADAS") <(echo "$EN_LA_COPIA") | tr '\n' ' ')
+CUANTAS=$(echo "$EN_LA_COPIA" | grep -c . || true)
+
+if [ -z "$ESPERADAS" ]; then
+  decir "no pude preguntarle a la base qué tablas tiene; no guardo una copia que no puedo controlar."
+  exit 1
+fi
+if [ "$TAMANO" -lt "$MINIMO" ] || [ -n "${FALTAN// /}" ]; then
+  decir "el volcado no sirve: $TAMANO bytes, $CUANTAS tablas${FALTAN:+, FALTAN: $FALTAN}. No lo guardo."
   exit 1
 fi
 
 mv "$PARCIAL" "$ARCHIVO"
 chmod 600 "$ARCHIVO"
-decir "guardado $(basename "$ARCHIVO") · $TAMANO bytes · $TABLAS tablas"
+decir "guardado $(basename "$ARCHIVO") · $TAMANO bytes · $CUANTAS tablas, todas las que tiene la base"
 
 # Se borran las viejas, y sólo las de este proyecto: el patrón del nombre las acota.
 BORRADAS=$(find "$DESTINO" -maxdepth 1 -name "$BASE-*.sql.gz" -mtime +"$DIAS" -print -delete | wc -l)
