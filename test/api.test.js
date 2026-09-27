@@ -244,19 +244,68 @@ test('/api/salud contesta sin token, para el healthcheck del deploy', async () =
   assert.equal(r.json().bien, true)
 })
 
-test('un mail sirve de usuario, y uno largo entra en la columna', async () => {
-  const largo = 'angelvillamil1234@subdominio-bastante-largo.com.ar'
+/* EL BORDE EXACTO DE LA COLUMNA, no «uno largo». Acá había un mail de 50 caracteres
+   contra un límite de 64: pasaba siempre y no probaba nada del límite. Y el test de al
+   lado tenía un `'a'.repeat(70)` entre los rechazados, pero ése lo rechaza el formato —no
+   tiene arroba— así que tampoco tocaba la regla del largo. O sea que la regla que impide
+   que MySQL trunque un usuario, y con eso lo deje sin poder entrar, no estaba probada.
+
+   Los 64 son el ancho de `usuario` y también lo que exige `revisarCredenciales`: tienen
+   que ser el mismo número, y esto es lo que lo obliga. */
+test('un mail de 64 entra entero, y uno de 65 se rechaza con el motivo', async () => {
+  const cola = '@ejemplo.com'
+  const justo = 'a'.repeat(64 - cola.length) + cola
+  assert.equal(justo.length, 64)
+
   const r = await pedir({
-    method: 'POST', url: '/api/registro',
-    payload: { usuario: largo, clave: 'kamehameha' },
+    method: 'POST', url: '/api/registro', payload: { usuario: justo, clave: 'kamehameha' },
   })
   assert.equal(r.statusCode, 200, r.body)
-
-  const yo = await pedir({
-    method: 'GET', url: '/api/yo', headers: auth(r.json().token),
-  })
+  const yo = await pedir({ method: 'GET', url: '/api/yo', headers: auth(r.json().token) })
   // Si la columna quedó corta, MySQL lo trunca y el usuario deja de poder entrar.
-  assert.equal(yo.json().usuario, largo)
+  assert.equal(yo.json().usuario, justo)
+  assert.equal(yo.json().usuario.length, 64)
+
+  const pasado = 'a'.repeat(65 - cola.length) + cola
+  assert.equal(pasado.length, 65)
+  const no = await pedir({
+    method: 'POST', url: '/api/registro', payload: { usuario: pasado, clave: 'kamehameha' },
+  })
+  assert.equal(no.statusCode, 400)
+  assert.match(no.json().error, /largo/i,
+    'y el motivo tiene que ser el LARGO, no el formato: si no, el día que se afloje el regex esto pasa sin probar nada')
+})
+
+/* LO QUE CONTESTA FASTIFY SOLO TAMBIÉN TIENE QUE ESTAR EN CASTELLANO. Su cuerpo de error
+   es `{ statusCode, error, message }` y `error` es el NOMBRE del estado HTTP — «Bad
+   Request», «Payload Too Large»—, que es justo el campo que lee el front porque es el que
+   usan todas nuestras rutas. Así que un json cortado, un cuerpo enorme o una dirección
+   que no existe le mostraban «Bad Request» a la persona, en el medio de una app en
+   castellano. */
+test('los errores que arma Fastify solo llegan en castellano', async () => {
+  const casos = [
+    ['un json cortado a la mitad', { method: 'POST', url: '/api/sesion', payload: '{"usuario":', headers: { 'content-type': 'application/json' } }],
+    ['una dirección que no existe', { method: 'GET', url: '/api/no-existe-nada' }],
+    ['un cuerpo de más de 2 MB', { method: 'POST', url: '/api/sesion', payload: JSON.stringify({ usuario: 'a'.repeat(3 * 1024 * 1024) }), headers: { 'content-type': 'application/json' } }],
+  ]
+  for (const [nombre, pedidoOpts] of casos) {
+    const r = await pedir(pedidoOpts)
+    assert.ok(r.statusCode >= 400, `${nombre}: esperaba un error y fue ${r.statusCode}`)
+    const dicho = r.json()
+    assert.ok(dicho.error, `${nombre}: sin campo error`)
+    /* La lista es cerrada a propósito: un «no está en inglés» a ojo pasa cualquier cosa.
+       Si alguna vez hace falta un mensaje nuevo, se agrega acá y se lo mira una vez. */
+    const NUESTROS = [
+      'No se entendió lo que mandó la app. Probá de nuevo.',
+      'Eso es demasiado grande para mandarlo de una.',
+      'Demasiados intentos. Probá en un rato.',
+      'El servidor tuvo un problema. Probá de nuevo en un minuto.',
+      'No se pudo completar la operación.',
+      'Esa dirección no existe.',
+    ]
+    assert.ok(NUESTROS.includes(dicho.error),
+      `${nombre}: contestó «${dicho.error}», que no es ninguno de los mensajes nuestros — Fastify arma los suyos en inglés`)
+  }
 })
 
 test('sigue sin aceptar cualquier cosa de usuario', async () => {
@@ -620,6 +669,32 @@ test('una cuenta vieja con nombre a secas puede cambiar su clave', async () => {
     payload: { actual: 'una-clave-larga', nueva: 'corta' },
   })
   assert.equal(corta.statusCode, 400)
+})
+
+/* LOS DOS 401 DE `PUT /api/clave` TIENEN QUE DISTINGUIRSE, y el servidor es el único que
+   sabe cuál mandó. El front trata esa ruta con `credenciales: true` para que «tu clave
+   actual no es esa» no te eche de una sesión sana; el precio era que una sesión MUERTA
+   tampoco te echaba, y el diálogo quedaba sin salida — escribieras lo que escribieras no
+   iba a andar nunca, con el token muerto todavía guardado. */
+test('los dos 401 de cambiar la clave se distinguen por el cuerpo', async () => {
+  const token = await registrar('dosunos@ejemplo.com')
+
+  const malaClave = await pedir({
+    method: 'PUT', url: '/api/clave', headers: auth(token),
+    payload: { actual: 'no-es-esa', nueva: 'una-clave-larga' },
+  })
+  assert.equal(malaClave.statusCode, 401)
+  assert.equal(malaClave.json().sesion, undefined,
+    'la clave equivocada NO puede venir marcada como sesión: si no, te echa de una sesión sana')
+
+  await pool.query('UPDATE sesion SET vence = NOW() - INTERVAL 1 DAY')
+  const vencida = await pedir({
+    method: 'PUT', url: '/api/clave', headers: auth(token),
+    payload: { actual: 'kamehameha', nueva: 'una-clave-larga' },
+  })
+  assert.equal(vencida.statusCode, 401)
+  assert.equal(vencida.json().sesion, true,
+    'la sesión vencida SÍ, o el front la muestra como un error del formulario')
 })
 
 test('sin sesión no se cambia la clave de nadie', async () => {

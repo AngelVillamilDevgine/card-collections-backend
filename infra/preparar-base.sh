@@ -55,9 +55,27 @@ GRANT ALL PRIVILEGES ON \`$BASE\`.* TO '$USUARIO'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-echo "Comprobando que el usuario nuevo entra por los dos caminos…"
-docker exec -i -e MYSQL_PWD="$CLAVE" "$CONTENEDOR" mysql -u"$USUARIO" -e "USE \`$BASE\`; SELECT 1" > /dev/null
-echo "  entra bien."
+# SE PRUEBAN LOS DOS CAMINOS, Y ANTES SE PROBABA UNO SOLO. El mensaje decía «entra por
+# los dos caminos» y después hacía un único `docker exec ... mysql -u$USUARIO`, que entra
+# por el SOCKET: MySQL lo ve como `localhost`. O sea que la cuenta `172.%` —la que usa el
+# API, la razón por la que existen dos— no se tocaba nunca, y el script se declaraba
+# conforme igual. Es la misma forma del error que ya costó el respaldo diario cuando se
+# renombró `dbz@'%'` y nadie se acordó de la segunda cuenta.
+#
+# El segundo camino se prueba por TCP contra la gateway de Docker: una conexión que sale
+# del contenedor hacia 172.17.0.1 vuelve por hairpin y MySQL la ve como `172.17.0.1`, que
+# es exactamente como llega el API por `host.docker.internal`. Medido en este servidor.
+echo "Comprobando que el usuario nuevo entra por los DOS caminos…"
+POR_SOCKET=$(docker exec -i -e MYSQL_PWD="$CLAVE" "$CONTENEDOR" \
+  mysql -N -B -u"$USUARIO" -e "USE \`$BASE\`; SELECT CURRENT_USER()" 2>/dev/null)
+echo "  por el socket (el respaldo y el despliegue): $POR_SOCKET"
+case "$POR_SOCKET" in *@localhost) ;; *) echo "  ESO NO ES localhost: la cuenta del respaldo no quedó" >&2; exit 1 ;; esac
+
+POR_TCP=$(docker exec -i -e MYSQL_PWD="$CLAVE" "$CONTENEDOR" \
+  mysql -N -B -h 172.17.0.1 -u"$USUARIO" -e "USE \`$BASE\`; SELECT CURRENT_USER()" 2>/dev/null)
+echo "  por la gateway (el API):                     $POR_TCP"
+case "$POR_TCP" in *@172.*) ;; *) echo "  ESO NO ES 172.%: el API no va a poder entrar" >&2; exit 1 ;; esac
+echo "  entra por los dos."
 
 # 172.17.0.1 es la gateway de Docker; host.docker.internal apunta ahí desde los
 # servicios del swarm. Está verificado contra este servidor.

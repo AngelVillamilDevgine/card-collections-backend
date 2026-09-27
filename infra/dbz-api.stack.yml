@@ -2,7 +2,13 @@
 #
 # Primer despliegue (una vez):
 #   bash infra/preparar-base.sh        # base, usuario y secret dbz_mysql_url
-#   printf '%s' "<secreto>" | docker secret create dbz_secreto_proxy -
+#
+# ACÁ HABÍA UNA LÍNEA MÁS que mandaba crear un secret `dbz_secreto_proxy`, y se borró el
+# 2026-09-27: ese secret era la cabecera compartida del camino viejo —el front pedía /api
+# a sí mismo, una Function de Pages lo reenviaba al VPS sin cifrar con esa cabecera— y ese
+# camino se desarmó el 2026-09-18. Ningún servicio de este archivo lo usa: el bloque
+# `secrets` del final declara `dbz_mysql_url` y nada más. Quien siguiera la receta en una
+# emergencia creaba un secret al pepe y se quedaba esperando entender para qué era.
 #   DBZ_DOMINIO=api.cromeros.com.ar #   DBZ_ORIGENES=https://cromeros.com.ar,https://www.cromeros.com.ar #   DBZ_ADMINS=angelvillamil1234@gmail.com #   DBZ_IMAGEN=dbz-cromeros-api:<commit> #     docker stack deploy -c dbz-api.stack.yml --resolve-image never dbz-api
 #
 # Los valores de arriba son los de VERDAD, los que están corriendo. Antes acá decía

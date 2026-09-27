@@ -36,7 +36,19 @@ export function crearApp(pool, poolSalud = pool) {
     logger: { level: process.env.DBZ_LOG ?? 'info' },
   })
 
-  app.register(cors, { origin: ORIGENES, credentials: false })
+  /* `maxAge` NO ES UN DETALLE ACÁ. El PUT de cada carta manda `Content-Type` y
+     `Authorization`, así que no es un pedido simple: el navegador pregunta primero con un
+     OPTIONS. Sin `Access-Control-Max-Age` cada navegador usa su propio plazo y Chrome
+     guarda la respuesta **cinco segundos**, o sea que casi todo toque espaciado —mirás el
+     álbum, buscás la carta, tocás— paga un viaje entero de más ANTES de que salga el PUT.
+     En un teléfono con datos eso son entre 300 y 3000 ms, que es exactamente lo que este
+     proyecto ya mide para el viaje de guardado.
+
+     Medido contra producción el 2026-09-27: el OPTIONS contesta 204 y NO trae la
+     cabecera. Van dos horas y no un día porque **Chrome recorta a 7200 y descarta lo que
+     se pase**; Firefox acepta 86400. Poner 86400 haría que Chrome —que es por donde entra
+     casi toda la gente— se quedara sin nada. */
+  app.register(cors, { origin: ORIGENES, credentials: false, maxAge: 7200 })
 
   /* --- Freno a la fuerza bruta -------------------------------------------------
      Sin esto, probar claves contra /sesion sale gratis. Se cuenta por IP y se
@@ -116,11 +128,47 @@ export function crearApp(pool, poolSalud = pool) {
     respuesta.header('Strict-Transport-Security', 'max-age=31536000')
   })
 
+  /* LO QUE FASTIFY CONTESTA SOLO VIENE EN INGLÉS, y el front lo muestra tal cual.
+     Su cuerpo de error es `{ statusCode, error, message }`, donde `error` es el NOMBRE del
+     estado HTTP — «Bad Request», «Payload Too Large»— y el front lee justamente ese campo
+     porque es el que usan todas nuestras rutas. Así que un json cortado a la mitad, un
+     cuerpo de más de 2 MB o una dirección que no existe le mostraban a la persona
+     «Bad Request» en el medio de una app en castellano.
+
+     No se traduce cada caso: se dicen los tres que alguien puede provocar sin querer y el
+     resto cae en una frase honesta. Y `message` NO se reenvía: puede traer detalles del
+     parseo que no le sirven a nadie y que además cuentan de más sobre el servidor. */
+  app.setErrorHandler((e, pedido, respuesta) => {
+    const codigo = e.statusCode ?? 500
+    if (codigo >= 500) pedido.log.error(e)
+    const dicho =
+      e.code === 'FST_ERR_CTP_EMPTY_JSON_BODY' || e.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE'
+        ? 'No se entendió lo que mandó la app. Probá de nuevo.'
+        : codigo === 400 ? 'No se entendió lo que mandó la app. Probá de nuevo.'
+          : codigo === 413 ? 'Eso es demasiado grande para mandarlo de una.'
+            : codigo === 429 ? 'Demasiados intentos. Probá en un rato.'
+              : codigo >= 500 ? 'El servidor tuvo un problema. Probá de nuevo en un minuto.'
+                : 'No se pudo completar la operación.'
+    return respuesta.code(codigo).send({ error: dicho })
+  })
+
+  /* Y lo mismo para una dirección que no existe, que no pasa por el manejador de errores. */
+  app.setNotFoundHandler((pedido, respuesta) =>
+    respuesta.code(404).send({ error: 'Esa dirección no existe.' })
+  )
+
   /* --- Sesión ---------------------------------------------------------------- */
 
   async function conSesion(pedido, respuesta) {
     const usuario = await usuarioDeToken(pool, tokenDe(pedido))
-    if (!usuario) return respuesta.code(401).send({ error: 'Tenés que entrar de nuevo.' })
+    /* `sesion: true` DICE CUÁL DE LOS DOS 401 ES, y el servidor es el único que lo sabe.
+       En `PUT /api/clave` pueden salir dos 401 con el mismo código y cuerpos indistinguibles:
+       éste —el token venció o lo revocaron— y «tu clave actual no es esa». El front trata
+       esa ruta con `credenciales: true` justamente para que el segundo no te eche de una
+       sesión sana; el precio era que el PRIMERO tampoco te echaba, así que una sesión
+       muerta se mostraba como un error del formulario y el diálogo quedaba sin salida:
+       escribieras lo que escribieras, no iba a andar nunca. */
+    if (!usuario) return respuesta.code(401).send({ error: 'Tenés que entrar de nuevo.', sesion: true })
     pedido.usuario = usuario
     // `?app=1` lo manda el front cuando corre como app instalada. Va en la dirección y
     // no en una cabecera para no obligar a un pedido de permiso previo.
