@@ -11,7 +11,7 @@ import {
   cambiarClave, cerrarLasDemas,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
-import { anotarVisita, resumen } from './estadisticas.js'
+import { anotarVisita, resumen, leerColecciones } from './estadisticas.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -294,7 +294,9 @@ export function crearApp(pool, poolSalud = pool) {
   app.get('/api/admin/resumen', { preHandler: conSesion }, async (pedido, respuesta) => {
     // 404 y no 403: a quien no es admin no se le confirma que esto existe.
     if (!esAdmin(pedido.usuario.usuario)) return respuesta.code(404).send({ error: 'No existe.' })
-    return resumen(pool)
+    /* El front manda qué prefijos son de cada colección. Si no manda nada —o manda
+       cualquier cosa— el panel contesta igual, sin partir por colección. */
+    return resumen(pool, leerColecciones(pedido.query?.cols))
   })
 
   /* --- Colección ------------------------------------------------------------- */

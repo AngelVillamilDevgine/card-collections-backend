@@ -81,7 +81,111 @@ async function salud(pool) {
   return salida
 }
 
-export async function resumen(pool) {
+/* QUIÉN DICE QUÉ ES UNA COLECCIÓN: el front, no el backend.
+ *
+ * El catálogo vive en `frontend/public/data/` y se edita sin recompilar nada, así que un
+ * `clave LIKE 'ley-%'` escrito acá sería el mismo error que se corrigió con el total de
+ * 1936: el día que cambie, el panel sigue contestando con la versión vieja y ningún test
+ * puede agarrarlo porque ninguno ve los dos lados. Así que el front manda qué prefijos son
+ * de cada colección y acá sólo se agrupa.
+ *
+ * Viene del cliente, así que se valida entero antes de tocar el SQL: cada prefijo con la
+ * misma forma que acepta `claveValida`, y con techo. Los valores van BINDEADOS; lo único
+ * que se construye es la cantidad de signos de pregunta.
+ *
+ * Si no viene, o viene mal, se devuelve `null` y el panel sigue andando sin partir nada:
+ * un front viejo contra un back nuevo tiene que seguir funcionando. */
+const PREFIJO = /^[a-z0-9-]{1,34}$/
+const TOPE_COLECCIONES = 10
+const TOPE_PREFIJOS = 200
+
+export function leerColecciones(texto) {
+  if (!texto) return null
+  let crudo
+  try { crudo = JSON.parse(texto) } catch { return null }
+  if (!crudo || typeof crudo !== 'object' || Array.isArray(crudo)) return null
+  const salida = []
+  let cuantos = 0
+  for (const [id, prefijos] of Object.entries(crudo)) {
+    if (!PREFIJO.test(id) || !Array.isArray(prefijos) || !prefijos.length) return null
+    if (!prefijos.every((p) => typeof p === 'string' && PREFIJO.test(p))) return null
+    cuantos += prefijos.length
+    salida.push({ id, prefijos })
+  }
+  if (!salida.length || salida.length > TOPE_COLECCIONES || cuantos > TOPE_PREFIJOS) return null
+  return salida
+}
+
+/* DE QUÉ COLECCIÓN ES UN TRAMO, Y POR QUÉ NO ALCANZA CON COMPARARLO ENTERO.
+ *
+ * La parte de la clave anterior a los dos puntos es el id de la expansión —`ley-6`— o ese
+ * id con el sufijo de una variante —`ley-6-dor`—. Comparando por igualdad, las filas de
+ * variante caen fuera de toda colección: medido contra producción, las once que Angel
+ * tenía cargadas en dorado, plata, naranja y cyan desaparecían del reparto (8026 + 27 =
+ * 8053 contra un total de 8064) **y el panel las anunciaba como «de un catálogo viejo»,
+ * con el pie ofreciendo borrarlas**. Un cartel que invita a borrar cartas buenas.
+ *
+ * Se elige el prefijo MÁS LARGO que coincide, por si alguna vez un id es prefijo de otro. */
+export function coleccionDe(tramo, colecciones) {
+  let mejor = null
+  for (const c of colecciones) {
+    for (const p of c.prefijos) {
+      if (tramo !== p && !tramo.startsWith(p + '-')) continue
+      if (!mejor || p.length > mejor.largo) mejor = { id: c.id, largo: p.length }
+    }
+  }
+  return mejor?.id ?? null
+}
+
+/* Cuántas cartas tiene cada persona EN CADA COLECCIÓN. Sin esto, la columna «Álbum»
+   divide las filas de alguien por la suma de los dos catálogos: el que tiene Cromeros
+   entero —1936 de 1936— se dibuja con 64%, porque el denominador son 3033.
+ *
+ * El reparto se hace en JS y no en un CASE armado con los prefijos del cliente. Sale más
+ * simple, no construye SQL con nada que venga de afuera, y es lo único que puede hacer
+ * bien lo de los sufijos de variante. La consulta trae una fila por (persona, tramo): hoy
+ * son unas 500, y con el techo de 200 personas no pasa de unos miles. */
+async function porPersonaYColeccion(pool, colecciones) {
+  if (!colecciones) return null
+  const [crudas] = await pool.query(
+    `SELECT usuario_id, SUBSTRING_INDEX(clave, ':', 1) tramo,
+            COUNT(*) cartas, COALESCE(SUM(cantidad - 1), 0) repetidas
+       FROM carta GROUP BY usuario_id, tramo`
+  )
+  const filas = crudas.map((f) => ({ ...f, col: coleccionDe(f.tramo, colecciones) ?? '' }))
+  /* SE SUMA, NO SE PISA. La consulta trae una fila por (persona, TRAMO) y una colección
+     tiene muchos tramos: Cromeros son dieciséis. Asignando en vez de acumular, de cada
+     persona sobrevivía un solo tramo — medido contra producción, alguien con 1842 cartas
+     se dibujaba con 123, que son las de su último tramo. */
+  const mapa = new Map()
+  for (const f of filas) {
+    if (!f.col) continue
+    if (!mapa.has(f.usuario_id)) mapa.set(f.usuario_id, {})
+    const suyo = mapa.get(f.usuario_id)
+    const antes = suyo[f.col] ?? { cartas: 0, repetidas: 0 }
+    suyo[f.col] = {
+      cartas: antes.cartas + Number(f.cartas),
+      repetidas: antes.repetidas + Number(f.repetidas),
+    }
+  }
+
+  /* Y el total por colección sale de ese mismo mapa, que ya tiene UNA entrada por persona:
+     contando filas, «personas» daba los dieciséis tramos de cada uno. No sale de sumar la
+     tabla de «uno por uno», que viene cortada en 200 y mentiría — es la lección del #97. */
+  const totales = new Map()
+  for (const suyo of mapa.values()) {
+    for (const [col, v] of Object.entries(suyo)) {
+      const t = totales.get(col) ?? { col, cartas: 0, repetidas: 0, personas: 0 }
+      t.cartas += v.cartas
+      t.repetidas += v.repetidas
+      t.personas += 1
+      totales.set(col, t)
+    }
+  }
+  return { porPersona: mapa, totales: [...totales.values()] }
+}
+
+export async function resumen(pool, colecciones = null) {
   const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp] =
     await Promise.all([
       una(pool, 'SELECT COUNT(*) FROM usuario'),
@@ -114,6 +218,49 @@ export async function resumen(pool) {
     [hoyAca()]
   )
 
+  /* LAS COHORTES, que es lo que un total acumulado no puede decir. `volvieron` mezcla a
+     quien se anotó hace tres semanas con quien se anotó ayer, y mientras la app crece ese
+     promedio baja solo aunque nada empeore — porque cada semana entra gente que todavía no
+     tuvo tiempo de volver. Agrupado por semana de alta, en cambio, se puede comparar una
+     semana contra otra y ver si lo que cambiamos sirvió.
+
+     La semana arranca el lunes (WEEKDAY() devuelve 0 el lunes) y en hora de Argentina,
+     igual que todo lo demás del panel. */
+  const [cohortes] = await pool.query(
+    `SELECT DATE_FORMAT(DATE_SUB(DATE(${aca('u.creado')}),
+              INTERVAL WEEKDAY(${aca('u.creado')}) DAY), '%Y-%m-%d') semana,
+            COUNT(*) gente,
+            SUM(EXISTS(SELECT 1 FROM carta c WHERE c.usuario_id = u.id)) cargaron,
+            SUM((SELECT COUNT(*) FROM visita v WHERE v.usuario_id = u.id) > 1) volvieron
+       FROM usuario u
+      WHERE DATE(${aca('u.creado')}) > DATE_SUB(?, INTERVAL 56 DAY)
+      GROUP BY semana ORDER BY semana`,
+    [hoyAca()]
+  )
+
+  /* EL PULSO: cuánta gente USA la app cada día. El gráfico que había es de ALTAS, que es
+     otra cosa — mide cuánta gente llega, no cuánta se queda. Con la app creciendo, las
+     altas hacen un pico el día que se comparte el enlace y después nada; las visitas
+     dicen si alguien sigue ahí al día siguiente. */
+  const [actividad] = await pool.query(
+    `SELECT DATE_FORMAT(dia, '%Y-%m-%d') dia, COUNT(*) personas, COALESCE(SUM(app), 0) porApp
+       FROM visita WHERE dia > DATE_SUB(?, INTERVAL 14 DAY)
+      GROUP BY dia ORDER BY dia`,
+    [hoyAca()]
+  )
+
+  /* QUÉ SE ESTÁ USANDO, por tramo del álbum, SIN que el backend sepa qué es cada tramo.
+     Devuelve la parte de la clave anterior a los dos puntos y listo; agrupar esos tramos
+     en colecciones lo hace el front, que es el único lado que conoce el catálogo. Poner
+     acá un `clave LIKE 'ley-%'` sería repetir el error que se corrigió con el total de
+     1936: el catálogo se edita sin recompilar y el backend se quedaría con la versión
+     vieja, mintiendo en silencio. */
+  const [porTramo] = await pool.query(
+    `SELECT SUBSTRING_INDEX(clave, ':', 1) tramo,
+            COUNT(*) filas, COUNT(DISTINCT usuario_id) personas
+       FROM carta GROUP BY tramo ORDER BY filas DESC`
+  )
+
   const [tramos] = await pool.query(
     `SELECT CASE WHEN n = 0 THEN 'Ninguna'
                  WHEN n < 10 THEN '1 a 9'
@@ -139,7 +286,8 @@ export async function resumen(pool) {
 
      O sea que lo que de verdad crecía sin techo no era el motor: era la respuesta. */
   const [gente] = await pool.query(
-    `SELECT u.usuario,
+    `SELECT u.id,
+            u.usuario,
             DATE_FORMAT(${aca('u.creado')}, '%Y-%m-%d') alta,
             COALESCE(k.cartas, 0) cartas,
             COALESCE(k.repetidas, 0) repetidas,
@@ -156,6 +304,9 @@ export async function resumen(pool) {
     [TOPE_GENTE]
   )
 
+  const partido = await porPersonaYColeccion(pool, colecciones)
+  const porPersona = partido?.porPersona ?? null
+
   return {
     salud: await salud(pool),
     /* Acá había un `total: 1936` escrito a mano, que es el tamaño del catálogo. El
@@ -167,6 +318,18 @@ export async function resumen(pool) {
     usuarios: { total: usuarios, conCartas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp },
     cartas: { total: cartas, repetidas },
     porDia: porDia.map((f) => ({ dia: f.dia, cuantos: Number(f.cuantos) })),
+    actividad: actividad.map((f) => ({ dia: f.dia, personas: Number(f.personas), porApp: Number(f.porApp) })),
+    cohortes: cohortes.map((f) => ({
+      semana: f.semana,
+      gente: Number(f.gente),
+      cargaron: Number(f.cargaron),
+      volvieron: Number(f.volvieron),
+    })),
+    porTramo: porTramo.map((f) => ({
+      tramo: f.tramo,
+      filas: Number(f.filas),
+      personas: Number(f.personas),
+    })),
     tramos: tramos.map((f) => ({ tramo: f.tramo, cuantos: Number(f.cuantos) })),
     /* Cuánta gente hay en total, aparte de cuánta entró en la tabla. El panel lo
        necesita para no mentir cuando la lista viene cortada: los renglones que dicen
@@ -174,6 +337,10 @@ export async function resumen(pool) {
        de la tabla. Es la misma lección del #97 — una tabla que muestra una parte no
        puede ser la fuente de un total. */
     tope: TOPE_GENTE,
+    /* Qué colecciones se pidieron, para que el front no tenga que adivinar si la
+       respuesta viene partida o no (un back viejo no la parte). */
+    colecciones: colecciones ? colecciones.map((c) => c.id) : null,
+    porColeccion: partido?.totales ?? null,
     gente: gente.map((f) => ({
       usuario: f.usuario,
       alta: f.alta,
@@ -182,6 +349,7 @@ export async function resumen(pool) {
       ultima: f.ultima ?? null,
       dias: Number(f.dias),
       app: Number(f.app) === 1,
+      porColeccion: porPersona?.get(f.id) ?? null,
     })),
   }
 }
