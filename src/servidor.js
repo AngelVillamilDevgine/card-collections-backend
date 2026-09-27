@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url'
 import { conectar, conectarSalud, prepararEsquema, borrarVencidas } from './base.js'
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
-  usuarioDeToken, revisarCredenciales, tokenDe, gastarComoSiExistiera,
+  usuarioDeToken, revisarCredenciales, revisarClave, tokenDe, gastarComoSiExistiera,
   cambiarClave, cerrarLasDemas,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
 import { anotarVisita, resumen, leerColecciones } from './estadisticas.js'
+import { createLimiter, WINDOW as VENTANA } from './limiter.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -86,38 +87,17 @@ export function crearApp(pool, poolSalud = pool) {
   const TOPE_CUENTA = 10      // fracasos contra una misma cuenta
   const TOPE_IP = 20          // fracasos desde una misma IP, contra las cuentas que sean
   const TOPE_REGISTROS = 10   // registros desde una misma IP, salgan bien o mal
-  const VENTANA = 15 * 60 * 1000
 
-  /* Cuántos baldes se guardan como mucho. La llave la arma en parte el cliente —la IP y
-     el nombre de usuario que manda—, así que sin tope se puede hacer crecer el Map hasta
-     voltear el proceso, que tiene 256 MB. Cuando se llena se tiran los más viejos y no
-     todos: un `clear()` le daría al atacante justo lo que busca, una forma de borrar los
-     contadores de los demás. */
-  const MAXIMO_BALDES = 5000
+  /* Las reglas del balde viven en `limiter.js`, afuera, y no en un closure de acá: el tope
+     de baldes y a quién se desaloja necesitan cinco mil baldes para probarse, o sea cinco
+     mil scrypt si se prueba por HTTP. Nadie corre ese test, y las dos reglas estaban mal.
+     Ver `test/limiter.test.js`. */
+  const freno = createLimiter()
+  const frenado = (llave, tope) => freno.blocked(llave, tope)
+  const sumar = (llave) => freno.fail(llave)
+  const perdonar = (llave) => freno.forgive(llave)
 
-  const intentos = new Map()
-
-  function balde(llave) {
-    const previo = intentos.get(llave)
-    if (previo && Date.now() - previo.desde <= VENTANA) return previo
-    if (intentos.size >= MAXIMO_BALDES) {
-      for (const vieja of intentos.keys()) {
-        intentos.delete(vieja)
-        if (intentos.size < MAXIMO_BALDES * 0.9) break
-      }
-    }
-    const nuevo = { n: 0, desde: Date.now() }
-    intentos.set(llave, nuevo)
-    return nuevo
-  }
-
-  const frenado = (llave, tope) => balde(llave).n >= tope
-  const sumar = (llave) => { balde(llave).n++ }
-  const perdonar = (llave) => intentos.delete(llave)
-
-  const reloj = setInterval(() => {
-    for (const [llave, v] of intentos) if (Date.now() - v.desde > VENTANA) intentos.delete(llave)
-  }, VENTANA)
+  const reloj = setInterval(() => freno.sweep(), VENTANA)
   reloj.unref()
   app.addHook('onClose', () => clearInterval(reloj))
 
@@ -158,7 +138,7 @@ export function crearApp(pool, poolSalud = pool) {
        saturaba el threadpool y frenaba TODA la API, incluido /api/salud: con el
        healthcheck en rojo, Docker mata y reinicia la tarea. Y de paso llenaba la tabla
        de cuentas basura. */
-    const llave = `reg|${ipDe(pedido)}`
+    const llave = freno.key('reg', ipDe(pedido))
     if (frenado(llave, TOPE_REGISTROS))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
     // Cuentan todos, salgan bien o mal: lo que se limita acá es crear cuentas.
@@ -196,11 +176,14 @@ export function crearApp(pool, poolSalud = pool) {
   })
 
   app.post('/api/sesion', async (pedido, respuesta) => {
-    const ip = ipDe(pedido)
+    // Por `key` aunque sea una sola parte: es lo que la recorta, y la IP también la manda
+    // el cliente (`CF-Connecting-IP` es una cabecera).
+    const ip = freno.key(ipDe(pedido))
     const { usuario, clave } = pedido.body ?? {}
     // Minúsculas porque la colación de la base tampoco distingue: si no, cambiando una
-    // mayúscula se estrenaría contador contra la misma cuenta.
-    const suya = `${ip}|${typeof usuario === 'string' ? usuario.toLowerCase() : ''}`
+    // mayúscula se estrenaría contador contra la misma cuenta. Y recortado, porque esto
+    // corre ANTES de validar nada: el nombre viene del cuerpo tal como lo mandaron.
+    const suya = freno.key(ip, typeof usuario === 'string' ? usuario.toLowerCase() : '')
 
     if (frenado(suya, TOPE_CUENTA) || frenado(ip, TOPE_IP))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
@@ -260,7 +243,7 @@ export function crearApp(pool, poolSalud = pool) {
     /* Con freno, y por cuenta. Acá el atacante YA tiene el token —si no, no llega—, así
        que no está adivinando desde cero; pero sin freno esto es un oráculo cómodo para
        probar la clave actual sin que el usuario se entere de nada. */
-    const llave = `clave|${pedido.usuario.id}`
+    const llave = freno.key('clave', pedido.usuario.id)
     if (frenado(llave, TOPE_CUENTA))
       return respuesta.code(429).send({ error: 'Demasiados intentos. Probá en un rato.' })
 
@@ -268,9 +251,11 @@ export function crearApp(pool, poolSalud = pool) {
     if (typeof actual !== 'string' || !actual)
       return respuesta.code(400).send({ error: 'Falta tu clave actual.' })
 
-    // La nueva pasa por la misma validación que al registrarse: el usuario ya está, así
-    // que se revisa con el suyo.
-    const mal = revisarCredenciales(pedido.usuario.usuario, nueva)
+    /* SÓLO LA CLAVE. Acá se pasaba el usuario de la cuenta por `revisarCredenciales`, que
+       lo hace pasar por el formato de mail — y hay cuentas viejas con nombre a secas, así
+       que a ésas les contestaba «Para crear tu cuenta hace falta un mail» y no podían
+       cambiar la clave nunca. El nombre no se está cambiando: no hay nada que validar. */
+    const mal = revisarClave(nueva)
     if (mal) return respuesta.code(400).send({ error: mal })
     if (nueva === actual)
       return respuesta.code(400).send({ error: 'La clave nueva tiene que ser distinta.' })

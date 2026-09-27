@@ -110,6 +110,32 @@ export async function usuarioDeToken(pool, token) {
    cuentas viejas con nombre a secas y dejarían de poder entrar. */
 const MAIL = /^[^\s@]{1,64}@[^\s@]{1,63}\.[a-zA-Z]{2,}$/
 
+/* LA CLAVE SOLA, y hace falta aparte.
+ *
+ * «Cambiar mi clave» llamaba a `revisarCredenciales` con el usuario de la cuenta, o sea que
+ * le pasaba por `MAIL` un nombre QUE YA EXISTE. Y hay cuentas viejas con nombre a secas
+ * —el propio comentario de arriba lo dice, y `Entrar.jsx` también—, así que a ésas les
+ * contestaba «Para crear tu cuenta hace falta un mail» en una pantalla donde no se está
+ * creando ninguna cuenta, con un 400, y NO PODÍAN CAMBIAR LA CLAVE NUNCA. Justo las más
+ * viejas, que son las que más razones tienen para rotarla, y el único camino que hay para
+ * echar una sesión ajena.
+ *
+ * El comentario de arriba decía «esto se usa SÓLO al registrarse» y hacía rato que no. */
+const LARGO_MAXIMO_CLAVE = 200
+
+export function revisarClave(clave) {
+  if (typeof clave !== 'string') return 'Falta la clave.'
+  if (clave.length < LARGO_CLAVE)
+    return `La clave necesita al menos ${LARGO_CLAVE} caracteres.`
+  /* Un techo, que no había. No es por el scrypt —su costo lo fijan N, r y p, no el largo
+     de la entrada— sino porque una clave de un megabyte no es una clave, y sin techo cada
+     intento arrastra ese megabyte por el threadpool. No echa a nadie: al ENTRAR no se
+     valida el largo, así que una clave vieja más larga que esto sigue andando. */
+  if (clave.length > LARGO_MAXIMO_CLAVE)
+    return `La clave no puede pasar de ${LARGO_MAXIMO_CLAVE} caracteres.`
+  return null
+}
+
 export function revisarCredenciales(usuario, clave) {
   if (typeof usuario !== 'string' || typeof clave !== 'string')
     return 'Faltan el mail o la clave.'
@@ -117,9 +143,9 @@ export function revisarCredenciales(usuario, clave) {
   if (usuario.length > 64) return 'Ese mail es demasiado largo.'
   if (!MAIL.test(usuario))
     return 'Para crear tu cuenta hace falta un mail.'
-  if (clave.length < LARGO_CLAVE)
-    return `La clave necesita al menos ${LARGO_CLAVE} caracteres.`
-  return null
+  /* La misma regla y no una copia: si acá se pidieran ocho y allá nueve, cambiar la clave
+     se volvería imposible sin que nada avise. */
+  return revisarClave(clave)
 }
 
 export function tokenDe(pedido) {

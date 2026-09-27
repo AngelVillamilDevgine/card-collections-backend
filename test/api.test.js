@@ -11,6 +11,7 @@ import { conectar, prepararEsquema } from '../src/base.js'
 import { crearApp } from '../src/servidor.js'
 import { olvidarVisitas } from '../src/estadisticas.js'
 import { reemplazar, TOPE_CARTAS } from '../src/coleccion.js'
+import { hashearClave } from '../src/auth.js'
 
 const URL = process.env.DBZ_MYSQL_URL_TEST
   ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
@@ -588,6 +589,37 @@ test('no se cambia la clave sin saber la actual, ni por una que no sirve', async
   // Después de todo eso, la clave original sigue siendo la que sirve.
   assert.equal((await pedir({ method: 'POST', url: '/api/sesion',
     payload: { usuario: 'chichi@ejemplo.com', clave: 'kamehameha' } })).statusCode, 200)
+})
+
+/* LAS CUENTAS VIEJAS NO PODÍAN CAMBIAR LA CLAVE NUNCA, y son justo las que más razones
+   tienen para rotarla. `/api/clave` pasaba el usuario de la cuenta por
+   `revisarCredenciales`, que exige formato de mail: a un nombre a secas —los que había
+   antes de que registrarse pidiera mail, y hay varios en producción— le contestaba 400 con
+   «Para crear tu cuenta hace falta un mail», en una pantalla donde no se crea ninguna
+   cuenta. Y cambiar la clave es el único camino que existe para echar una sesión ajena.
+
+   Registrarse ya no las deja crear, así que la fila va a mano: es lo que hay en la base. */
+test('una cuenta vieja con nombre a secas puede cambiar su clave', async () => {
+  await pool.query('INSERT INTO usuario (usuario, hash) VALUES (?, ?)',
+    ['negrojarita15', await hashearClave('kamehameha')])
+  const token = (await pedir({
+    method: 'POST', url: '/api/sesion', payload: { usuario: 'negrojarita15', clave: 'kamehameha' },
+  })).json().token
+  assert.ok(token, 'entrar sí podía: el formato no se valida al entrar')
+
+  const r = await pedir({
+    method: 'PUT', url: '/api/clave', headers: auth(token),
+    payload: { actual: 'kamehameha', nueva: 'una-clave-larga' },
+  })
+  assert.equal(r.statusCode, 200, r.body)
+  assert.equal((await pedir({ method: 'POST', url: '/api/sesion',
+    payload: { usuario: 'negrojarita15', clave: 'una-clave-larga' } })).statusCode, 200)
+  /* Y la regla de la clave sigue valiendo: lo que se sacó es la del NOMBRE, no la otra. */
+  const corta = await pedir({
+    method: 'PUT', url: '/api/clave', headers: auth(token),
+    payload: { actual: 'una-clave-larga', nueva: 'corta' },
+  })
+  assert.equal(corta.statusCode, 400)
 })
 
 test('sin sesión no se cambia la clave de nadie', async () => {
