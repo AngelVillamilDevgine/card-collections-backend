@@ -132,14 +132,17 @@ aditivo: un stack, dos secrets del swarm, un `location` en nginx y un timer. No 
 **Push a `main` y listo.** No hay nada más que hacer:
 
 1. GitHub Actions corre los tests contra un MySQL 9, la misma versión del servidor.
-2. En el servidor, `dbz-despliegue.timer` mira cada dos minutos el último commit de
+2. En el servidor, `dbz-despliegue.timer` mira **cada cinco minutos** el último commit de
    `main`. Si el check **Tests** de ese commit terminó bien, baja ese commit, construye
    la imagen `dbz-cromeros-api:<commit>` y le cambia la imagen al servicio.
 3. Si los tests fallaron, no lo toca.
 
 No hay secrets en GitHub, ni Docker Hub, ni claves SSH. El repo es público, así que el
 servidor lee el último commit, el resultado de los tests y el código sin credenciales.
-Una consulta por vuelta son 30 por hora; sin token GitHub deja 60.
+Una consulta por vuelta son **12 por hora**; sin token GitHub deja 60, y son **por IP**,
+o sea compartidas con todo lo que corre en el VPS. Con dos minutos este timer se comía 30
+de 60 él solo, y si otro proceso de la máquina consultaba GitHub se quedaban los dos sin
+nada. Por eso pasó a cinco.
 
 El swarm actualiza con `start-first`: la versión nueva levanta y tiene que ponerse
 *healthy* antes de que la anterior se apague. Si no lo logra, `failure_action: rollback`
@@ -147,8 +150,12 @@ la devuelve sola y el commit queda anotado como descartado, para no reintentarlo
 vuelta. El healthcheck pega contra `/api/salud`, que toca la base: un proceso vivo que no
 llega al MySQL no cuenta como sano.
 
-Después de cada deploy se borran las imágenes viejas **de este proyecto** —queda la
-anterior, que es la del rollback— y la caché de build se recorta a 1 GB.
+Después de cada deploy se borran las imágenes viejas **de este proyecto** —quedan la
+actual y las dos más nuevas, para poder volver—. La caché de build **no** se recorta a un
+tamaño: se poda **por antigüedad** (lo de más de una semana) y **sólo cuando quedan menos
+de 6 GB libres**. `buildx prune` es global y no se puede filtrar por proyecto, así que un
+tope de tamaño le borraría la caché a cualquiera que construya en esta máquina; lo más
+viejo es lo que menos le duele a nadie.
 
 ### Mirar qué pasó
 
@@ -187,6 +194,38 @@ Un commit descartado no se reintenta. Para forzar otro intento:
    systemctl enable --now dbz-despliegue.timer
    ```
 
+4. **El respaldo diario.** Este paso faltaba hasta el 2026-09-27, y no es un detalle:
+   siguiendo los tres pasos de arriba el servidor quedaba andando **y sin ninguna copia
+   de la base**. La sección de más abajo describía el respaldo como si se instalara solo.
+
+   ```sh
+   install -m 750 infra/dbz-respaldo.sh /usr/local/bin/
+   install -m 644 infra/dbz-respaldo.service infra/dbz-respaldo.timer /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now dbz-respaldo.timer
+   ```
+
+   Y las credenciales, que **no** son las de root del MySQL: el usuario `dbz`, el mismo
+   que usa la API, cuya clave vive en el secret `dbz_mysql_url` del swarm. Un secret no
+   se puede leer con `docker secret inspect`: hay que montarlo en algo.
+
+   ```sh
+   docker service create --name leer-dbz --restart-condition none --secret dbz_mysql_url \
+     alpine sh -c 'sed -n "s|.*://dbz:\([^@]*\)@.*|\1|p" /run/secrets/dbz_mysql_url'
+   docker service logs leer-dbz     # ahí sale la clave
+   docker service rm leer-dbz
+
+   printf '[client]\nuser=dbz\npassword=%s\n' '<la clave de arriba>' > /etc/dbz-respaldo.cnf
+   chmod 600 /etc/dbz-respaldo.cnf
+   ```
+
+   El archivo va `0600` y sólo-root porque es lo único que separa a quien entre a la
+   máquina de la base de las cartas. Y va por `--defaults-extra-file` en vez de en la
+   línea de comandos: si no, la clave aparece en `ps` para cualquiera.
+
+   Para comprobar que quedó: `systemctl start dbz-respaldo && journalctl -u dbz-respaldo -n 5`.
+   Tiene que decir cuántas tablas guardó y que son *todas las que tiene la base*.
+
 ### Respaldos
 
 Una copia por día de `dbz_cromeros`, y **sólo de esa base**: no toca las de los otros
@@ -201,15 +240,32 @@ proyectos del servidor ni nada más de la máquina.
 | Log | `journalctl -u dbz-respaldo` |
 
 El volcado se escribe como `.parcial` y recién se le pone el nombre bueno si pasa un
-control: que pese más de 5 KB y que traiga las cuatro tablas. **Un archivo vacío o a
+control: que pese más de 5 KB y que traiga **todas** las tablas. **Un archivo vacío o a
 medias es peor que no tener nada**, porque parece que hay copia y no hay.
+
+Cuáles son «todas» **se le pregunta a la base**, no está escrito en el script. Acá decía
+«las cuatro tablas» y el esquema crea cinco desde que existe `salud` — le agregaron una
+el mismo día que nació el respaldo y el número nunca se subió, así que un volcado al que
+le faltara una tabla entera pasaba el control. Probado sacándole `visita` a una copia
+real: el control viejo la aceptaba, el nuevo la rechaza y dice cuál falta.
 
 **Probar la restauración es parte del trabajo, no un extra.** Está
 `infra/dbz-probar-restauracion.sh`: restaura la copia más nueva en una base aparte,
-compara fila por fila contra la de verdad y la borra. No toca `dbz_cromeros`. Pide la
-clave de root por teclado, porque hay que crear una base y este repo es público.
-Corrido el 2026-09-20: 28 usuarios, 5245 cartas, 38 visitas y 43 sesiones, **cero
-diferencias**.
+comprueba que estén **todas** las tablas y que ninguna vino vacía, y la borra. No toca
+`dbz_cromeros`. Pide la clave de root por teclado, porque hay que crear una base y este
+repo es público.
+
+**Lo que ese script puede afirmar y lo que no.** Hasta el 2026-09-27 comparó `usuario` y
+`carta` y después imprimía «coinciden exactamente»: `visita`, `sesion` y `salud` no se
+miraban nunca. Pero exigir que la copia sea **igual** a la base tampoco sirve — la copia
+es de la madrugada y desde entonces la app se usó, así que diferir es lo normal. Hoy
+afirma sólo lo comprobable: que el volcado se restaura sin errores, que están todas las
+tablas, y que ninguna quedó vacía si la de verdad no lo está — que es como se ve un
+volcado cortado a la mitad. La deriva de filas se muestra como información.
+
+Corrido el 2026-09-27 sobre la copia del día: las cinco tablas presentes, ninguna vacía,
+y la deriva esperable (`carta` +10 por las cartas cargadas en el día, `usuario` −3 por
+tres cuentas de prueba borradas a mano).
 
 Los pasos para restaurar de verdad están al final de `infra/dbz-respaldo.sh`.
 
