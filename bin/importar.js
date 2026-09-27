@@ -17,7 +17,7 @@
 // propio `normalizar` estricto, que es el equivalente del que corre en el navegador.
 import fs from 'node:fs'
 import { conectar, prepararEsquema } from '../src/base.js'
-import { reemplazar, leer, normalizarCopia, revisarReemplazo } from '../src/coleccion.js'
+import { reemplazar, leer, normalizarCopia, revisarReemplazo, cuantasSePierden } from '../src/coleccion.js'
 
 const [usuario, ruta] = process.argv.slice(2)
 
@@ -62,14 +62,23 @@ if (mal) await salir(`${mal}\nNo se tocó nada.`)
    Se cuentan CARTAS y no claves, por lo mismo que `revisarReemplazo`: una clave con
    cantidad 0 no es una carta, y contándolas el aviso mentía sobre las dos puntas
    —«esta copia trae 2» cuando trae 0, y «perdés 1» cuando perdés 3—. */
-const cartasDe = (c) => Object.values(c || {}).filter((n) => Number(n) > 0)
-const antes = cartasDe((await leer(pool, id)).cantidades).length
+const cartasDe = (c) => Object.values(c ?? {}).filter((n) => Number(n) > 0)
+const ahora = (await leer(pool, id)).cantidades
+const antes = cartasDe(ahora).length
 const trae = cartasDe(datos.cantidades).length
+
+/* Clave por clave, y no `antes - trae`: el porqué está arriba de `cuantasSePierden`, en
+   coleccion.js. Vive allá y no acá para que no haya dos versiones de la misma cuenta —
+   que es exactamente cómo esta herramienta se quedó con la fórmula que la app ya había
+   refutado. */
+const pierde = cuantasSePierden(ahora, datos.cantidades)
+
 if (antes && process.env.DBZ_PISAR !== '1') {
-  const pierde = antes - trae
   await salir(
     `Ojo: "${usuario}" tiene ${antes} cartas y esta copia trae ${trae}.\n` +
-      (pierde > 0 ? `Esto las reemplaza y perdés ${pierde}.\n` : 'Esto las reemplaza.\n') +
+      (pierde > 0
+        ? `Esto las reemplaza y perdés ${pierde} que la copia no trae.\n`
+        : 'Esto las reemplaza, y la copia trae todas las que ya tenés.\n') +
       'Si es lo que querés, corrélo de nuevo con DBZ_PISAR=1.'
   )
 }

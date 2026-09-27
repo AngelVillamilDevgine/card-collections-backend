@@ -113,6 +113,25 @@ export const claveValida = (clave) => /^[a-z0-9-]{1,34}:\d{1,5}$/.test(clave)
    Y lo que importaba más: mientras corre un reemplazo de 10.000 filas, **otra conexión
    escribiendo en OTRA cuenta espera 35 ms**. InnoDB traba por fila y las filas van por
    `usuario_id`, así que esto no le pisa la base a nadie. */
+/* CUÁNTAS DE LAS QUE YA TENÉS NO VIENEN EN LA COPIA.
+ *
+ * Se cuenta clave por clave y NO restando totales, y la diferencia no es cosmética: un
+ * respaldo viejo de 600 cartas que sólo comparte 480 con tus 546 da `546 - 600 = -54`,
+ * así que el aviso no se dibuja y el mensaje se lee como que ganás — cuando en realidad
+ * perdés 66. Es el caso típico de restaurar desde otro aparato.
+ *
+ * Y el peor caso es el que la resta calla del todo: dos colecciones del mismo tamaño y
+ * completamente distintas dan 0, y el único camino que borra en masa se corre sin avisar.
+ *
+ * La app ya lo hacía así y lo tenía escrito; `bin/importar.js` se quedó con la fórmula
+ * vieja hasta el 2026-09-27, que es justo la herramienta que se usa para RECUPERAR un
+ * respaldo. Vive acá para que no haya dos versiones de la misma cuenta. */
+export function cuantasSePierden(ahora, copia) {
+  const conCarta = (c) => Object.keys(c ?? {}).filter((k) => Number(c[k]) > 0)
+  const traidas = new Set(conCarta(copia))
+  return conCarta(ahora).filter((k) => !traidas.has(k)).length
+}
+
 export const TOPE_CARTAS = 10000
 
 /* Las tres guardas del único camino de toda la app que borra en masa, juntas y en un solo

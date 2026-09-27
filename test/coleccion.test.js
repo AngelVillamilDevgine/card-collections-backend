@@ -7,7 +7,7 @@
 // «Listo: 0 cartas» — justo la herramienta que se usa para recuperar un respaldo.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizarCopia, revisarReemplazo, TOPE_CARTAS } from '../src/coleccion.js'
+import { normalizarCopia, revisarReemplazo, TOPE_CARTAS, cuantasSePierden } from '../src/coleccion.js'
 
 test('normalizarCopia rechaza lo que no es una copia', () => {
   // Cada uno de éstos se convertía antes en una colección vacía perfectamente válida.
@@ -102,4 +102,43 @@ test('la cadena entera: un archivo que no es copia nunca llega a revisarReemplaz
   const datos = normalizarCopia({ name: 'algo' })
   assert.equal(datos, null)
   assert.match(revisarReemplazo({ estados: {}, cantidades: {} }), /ninguna carta/)
+})
+
+/* CUÁNTAS PERDÉS AL RESTAURAR. La resta de totales miente de tres formas distintas, y
+   las tres están acá. `bin/importar.js` —la herramienta que se usa para RECUPERAR un
+   respaldo— usó la resta hasta el 2026-09-27. */
+
+test('cuenta las que TENÉS y la copia no trae, no la resta de totales', () => {
+  const mias = {}
+  for (let i = 1; i <= 546; i++) mias['exp-1:' + i] = 1
+  /* Un respaldo viejo de 600 que comparte 480 con tus 546. */
+  const copia = {}
+  for (let i = 67; i <= 546; i++) copia['exp-1:' + i] = 1      // 480 compartidas
+  for (let i = 1000; i <= 1119; i++) copia['exp-2:' + i] = 1   // 120 que vos no tenés
+  assert.equal(Object.keys(mias).length, 546)
+  assert.equal(Object.keys(copia).length, 600)
+  assert.equal(cuantasSePierden(mias, copia), 66, 'perdés las 66 que la copia no trae')
+  /* Y la fórmula vieja daba un número NEGATIVO, así que el aviso no se dibujaba y el
+     mensaje se leía como que ganabas. */
+  assert.equal(546 - 600, -54)
+})
+
+test('el peor caso: mismo tamaño y ninguna en común, que la resta calla del todo', () => {
+  const mias = { 'exp-1:1': 1, 'exp-1:2': 1, 'exp-1:3': 1 }
+  const copia = { 'exp-2:200': 1, 'exp-2:201': 1, 'exp-2:202': 1 }
+  assert.equal(cuantasSePierden(mias, copia), 3, 'las perdés TODAS')
+  assert.equal(3 - 3, 0, 'y la resta decía que no perdías ninguna')
+})
+
+test('una clave en cero no es una carta, de ninguno de los dos lados', () => {
+  /* Del lado de la copia: traerla en cero es borrarla, así que se pierde. */
+  assert.equal(cuantasSePierden({ 'exp-1:1': 2 }, { 'exp-1:1': 0 }), 1)
+  /* Y del tuyo: una fila en cero no es una carta que puedas perder. */
+  assert.equal(cuantasSePierden({ 'exp-1:1': 0 }, {}), 0)
+})
+
+test('sobrevive a que falten los mapas', () => {
+  assert.equal(cuantasSePierden(null, null), 0)
+  assert.equal(cuantasSePierden(undefined, { 'exp-1:1': 1 }), 0)
+  assert.equal(cuantasSePierden({ 'exp-1:1': 1 }, undefined), 1)
 })
