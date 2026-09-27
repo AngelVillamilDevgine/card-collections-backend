@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Despliega sola la API cuando aparece un commit nuevo en main con los tests en verde.
 #
-# La corre dbz-despliegue.timer cada dos minutos. No usa ningún secreto: el repo es
+# La corre dbz-despliegue.timer cada CINCO minutos, no cada dos: sin token la API de
+# GitHub deja 60 consultas por hora y son por IP, o sea compartidas con todo lo que corre
+# en el VPS — con dos minutos este timer se comía 30 de 60 él solo. No usa ningún secreto: el repo es
 # público, así que ver el último commit, saber si pasaron sus tests y bajar el código
 # se hace sin credenciales. Por eso no hay Docker Hub ni claves SSH en GitHub.
 #
@@ -155,7 +157,7 @@ ACTUAL=$(imagen_de '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
 [ -e "$ESTADO/descartado-$CORTO" ] && exit 0      # ya se intentó y no anduvo
 
 if [ "$RESULTADO" != "success" ]; then
-  # Se anota para no repetir el aviso cada dos minutos hasta el próximo commit.
+  # Se anota para no repetir el aviso en cada vuelta del timer hasta el próximo commit.
   decir "los tests de $CORTO dieron '$RESULTADO': no se despliega"
   touch "$ESTADO/descartado-$CORTO"
   anotar "{\"estado\":\"descartado\",\"commit\":\"$CORTO\"}"
