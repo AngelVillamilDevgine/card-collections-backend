@@ -1,8 +1,22 @@
-# El túnel a Cloudflare. Reemplaza al camino actual, que va sin cifrar:
-#   hoy:     Pages Function -> nginx :80 /cartas-api/ -> 127.0.0.1:8081   (HTTP en claro)
-#   con esto: Cloudflare -> túnel cifrado -> dbz-api_api:8787             (sin puertos abiertos)
+# EL TÚNEL A CLOUDFLARE. NO ESTÁ DESPLEGADO, y este archivo no describe lo que hay: es lo
+# único que cierra un agujero que sigue abierto. Léase entero antes de correrlo.
 #
-# Primer despliegue (una vez que exista la zona cromeros.com.ar en Cloudflare):
+# LO QUE DECÍA ACÁ HASTA EL 2026-09-27 YA NO ERA CIERTO. Hablaba de reemplazar un camino
+# —Pages Function -> nginx :80 -> 127.0.0.1:8081, en HTTP sin cifrar— que se desarmó el
+# 2026-09-18, cuando Angel compró cromeros.com.ar. Hoy el navegador le pega DIRECTO a
+# https://api.cromeros.com.ar, que entra por Traefik en el 443 y va al servicio por la red
+# `proxy`. No hay intermediarios y no hay nada sin cifrar.
+#
+# QUÉ COMPRARÍA ENTONCES, que es por lo que este archivo no se borró: hoy el origen tiene
+# el 443 abierto a internet y pasa la lista blanca de Dattaweb. El freno a la fuerza bruta
+# confía en `CF-Connecting-IP`, y eso se sostiene porque Cloudflare rechaza con 403, en el
+# borde, cualquier pedido que traiga una cabecera CF-* puesta por el cliente. Pero quien le
+# pegue DIRECTO al origen por el 443, salteando Cloudflare, se la inventa y estrena
+# contador. Con el túnel no hay puerto que golpear: el contenedor sale hacia afuera y nadie
+# entra. La otra forma de cerrarlo es de red —que al origen sólo lleguen los rangos de
+# Cloudflare— y esa toca el stack `edge`, que es de los clientes.
+#
+# Si alguna vez se despliega:
 #
 #   1. En Cloudflare: Zero Trust > Networks > Tunnels > Create a tunnel > Cloudflared.
 #      Copiar el token que da (empieza con eyJ...).
@@ -12,12 +26,10 @@
 #   3. En el servidor:
 #         DBZ_TUNEL_TOKEN='eyJ...' docker stack deploy -c cloudflared.stack.yml dbz-tunel
 #
-# Después de comprobar que api.cromeros.com.ar responde, recién ahí se desarma lo viejo:
-#   - VITE_API_URL=https://api.cromeros.com.ar en Pages y rebuild.
-#   - DBZ_ORIGENES con el dominio nuevo en el stack de la API.
-#   - Borrar la Function functions/api/[[ruta]].js del front.
-#   - Sacar el "ports: 8081" del stack de la API y el location /cartas-api/ de nginx.
-# En ese orden: primero que el camino nuevo ande, después apagar el viejo.
+# Y recién DESPUÉS de comprobar que api.cromeros.com.ar sigue contestando por el túnel, se
+# saca el router de Traefik del stack de la API. Primero que el camino nuevo ande, después
+# apagar el viejo — nunca al revés. Ojo que el `dbz-despliegue.sh` no re-aplica el stack:
+# sólo le cambia la imagen al servicio, así que eso va a mano.
 version: "3.8"
 
 services:
