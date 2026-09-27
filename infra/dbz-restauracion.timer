@@ -1,0 +1,21 @@
+[Unit]
+Description=Probar la restauracion una vez por semana
+
+[Timer]
+# UNA VEZ POR SEMANA Y NO TODOS LOS DIAS, a propósito. Lo que esto detecta —un volcado que
+# dejó de restaurar— no aparece de un día para el otro: aparece cuando alguien toca el
+# esquema o cuando el respaldo se rompe, y eso el propio respaldo ya lo avisa todos los
+# días con su control de tablas. Acá lo que se paga es una restauración sobre el MySQL que
+# comparten los proyectos de clientes, y eso no vale la pena pagarlo siete veces por
+# semana para enterarse de lo mismo.
+#
+# El lunes temprano, después del respaldo diario: así prueba una copia recién hecha.
+OnCalendar=Mon *-*-* 03:00
+# Si el servidor estuvo apagado, la corre al arrancar en vez de saltear la semana.
+Persistent=true
+# Para no caer en el mismo minuto que el resto de lo que corre en esta maquina compartida.
+RandomizedDelaySec=30min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

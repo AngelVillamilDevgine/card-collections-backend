@@ -226,6 +226,30 @@ Un commit descartado no se reintenta. Para forzar otro intento:
    Para comprobar que quedó: `systemctl start dbz-respaldo && journalctl -u dbz-respaldo -n 5`.
    Tiene que decir cuántas tablas guardó y que son *todas las que tiene la base*.
 
+5. **La prueba de restauración, que corre sola una vez por semana.** Tener copias no es lo
+   mismo que poder restaurarlas, y hasta el 2026-09-27 esto había que acordarse de
+   correrlo a mano: una copia que dejara de restaurar no la descubría nadie hasta el día
+   que hiciera falta.
+
+   ```sh
+   install -m 750 infra/dbz-probar-restauracion.sh /usr/local/bin/
+   install -m 644 infra/dbz-restauracion.service infra/dbz-restauracion.timer /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now dbz-restauracion.timer
+   ```
+
+   Y **un permiso, una sola vez**, porque hay que crear una base aparte y el usuario `dbz`
+   sólo tiene la suya. Va acotado a la base de descarte: no le abre nada de la de verdad
+   ni de las de los clientes.
+
+   ```sql
+   GRANT ALL PRIVILEGES ON `dbz\_restore\_prueba`.* TO 'dbz'@'localhost';
+   ```
+
+   Si falta, el script lo dice y sale con error — no se queda en silencio. Para
+   comprobarlo: `systemctl start dbz-restauracion && journalctl -u dbz-restauracion -n 20`.
+   Tiene que terminar en «La copia se restaura entera».
+
 ### Respaldos
 
 Una copia por día de `dbz_cromeros`, y **sólo de esa base**: no toca las de los otros

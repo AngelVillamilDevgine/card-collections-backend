@@ -1,0 +1,12 @@
+[Unit]
+Description=Probar que la copia de la base de las cartas se restaura de verdad
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dbz-probar-restauracion.sh
+# Restaurar 35 KB y contar cinco tablas son segundos. Si tarda más que esto es porque el
+# MySQL compartido está trabado, y ahí conviene que falle y no que se quede colgado
+# ocupando una conexión de la base de los clientes.
+TimeoutStartSec=10min
