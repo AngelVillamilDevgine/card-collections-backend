@@ -56,6 +56,40 @@ test('el que no es admin no ve nada, y ni se entera de que existe', async () => 
   assert.equal(r.statusCode, 404)
 })
 
+/* EL AVISO DE LA COPIA VIAJA EN `/api/yo`, y por eso hay test: es el contrato que hace que
+   el aviso llegue a la app —que se abre todos los días— y no sólo al panel, que hay que
+   acordarse de abrir. Si el campo desaparece, la marca del botón «Panel» deja de aparecer
+   y no se rompe nada más: falla en silencio, que es la clase de cosa que este proyecto ata
+   con un test. */
+test('/api/yo le manda la salud al admin, y a nadie más', async () => {
+  const deAdmin = await app.inject({ method: 'GET', url: '/api/yo', headers: auth(await registrar(ADMIN)) })
+  assert.equal(deAdmin.statusCode, 200)
+  const cuerpo = deAdmin.json()
+  assert.equal(cuerpo.admin, true)
+  assert.ok('salud' in cuerpo, 'al admin le tiene que llegar `salud`')
+
+  /* Al resto NO, y no es sólo prolijidad: es información del servidor que no le sirve de
+     nada a alguien que no puede hacer nada con ella. */
+  const delOtro = await app.inject({ method: 'GET', url: '/api/yo', headers: auth(await registrar(OTRO)) })
+  assert.equal(delOtro.json().admin, false)
+  assert.ok(!('salud' in delOtro.json()), 'a quien no es admin no le va la salud')
+})
+
+/* Y que una salud que no se puede leer NO deje a nadie afuera de sus cartas: el aviso es
+   accesorio y la app tiene que andar igual. Se rompe la tabla a propósito. */
+test('si la salud no se puede leer, /api/yo contesta igual', async () => {
+  const token = await registrar(ADMIN)
+  await pool.query('RENAME TABLE salud TO salud_escondida')
+  try {
+    const r = await app.inject({ method: 'GET', url: '/api/yo', headers: auth(token) })
+    assert.equal(r.statusCode, 200, 'la app no puede caerse porque falle un aviso')
+    assert.equal(r.json().usuario, ADMIN)
+    assert.equal(r.json().salud, null)
+  } finally {
+    await pool.query('RENAME TABLE salud_escondida TO salud')
+  }
+})
+
 /* Esto es lo que hace que el panel sirva para decidir algo: si "volvieron otro día"
    se midiera con las sesiones, el que entra una vez y usa la app todos los días
    contaría como que no volvió, porque la sesión dura 30 días. */

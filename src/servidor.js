@@ -11,7 +11,7 @@ import {
   cambiarClave, cerrarLasDemas,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
-import { anotarVisita, resumen, leerColecciones } from './estadisticas.js'
+import { anotarVisita, resumen, leerColecciones, salud } from './estadisticas.js'
 import { createLimiter, WINDOW as VENTANA } from './limiter.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
@@ -318,10 +318,27 @@ export function crearApp(pool, poolSalud = pool) {
     return { echadas }
   })
 
-  app.get('/api/yo', { preHandler: conSesion }, async (pedido) => ({
-    usuario: pedido.usuario.usuario,
-    admin: esAdmin(pedido.usuario.usuario),
-  }))
+  /* EL AVISO DE LA COPIA VIAJA ACÁ, y no sólo en el panel. Angel: «lo único que me importa
+     es que se haga la copia de seguridad, y si no se hace que ahí sí me avise».
+     El bloque Salud del panel ya lo decía, pero para verlo hay que ABRIR el panel — o sea
+     que si el respaldo deja de correr, el rojo está ahí y no lo mira nadie. Eso es un
+     tablero, no una alarma. Yendo en `/api/yo`, el aviso aparece en la app, que se abre
+     todos los días.
+
+     Va SÓLO para el admin: al resto no le sirve de nada y es información del servidor.
+     Y va CRUDA, con su `hace` en minutos, igual que en el panel: quién decide si «hace
+     tres días» es un problema es el front, en `health.js`, para que el umbral viva en un
+     solo lugar. */
+  app.get('/api/yo', { preHandler: conSesion }, async (pedido) => {
+    const admin = esAdmin(pedido.usuario.usuario)
+    return {
+      usuario: pedido.usuario.usuario,
+      admin,
+      /* Si la consulta falla, la app tiene que andar igual: un aviso que no se puede leer
+         no puede ser motivo de que no entres a tus cartas. */
+      ...(admin ? { salud: await salud(pool).catch(() => null) } : {}),
+    }
+  })
 
   /* --- Estadísticas, sólo para el admin ------------------------------------------ */
   app.get('/api/admin/resumen', { preHandler: conSesion }, async (pedido, respuesta) => {

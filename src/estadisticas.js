@@ -64,7 +64,7 @@ export function anotarVisita(pool, usuarioId, esApp = false) {
 /* Lo que escriben el respaldo y el despliegue, que corren fuera de la app. Se devuelve
    crudo con su fecha: quién decide si "hace tres días" es un problema es el panel, no
    esto. */
-async function salud(pool) {
+export async function salud(pool) {
   const [filas] = await pool.query(
     `SELECT clave, valor,
             DATE_FORMAT(${aca('actualizado')}, '%Y-%m-%d %H:%i') actualizado,
