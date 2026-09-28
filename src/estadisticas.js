@@ -127,14 +127,21 @@ export function leerColecciones(texto) {
  *
  * Se elige el prefijo MÁS LARGO que coincide, por si alguna vez un id es prefijo de otro. */
 export function coleccionDe(tramo, colecciones) {
+  return tramoDe(tramo, colecciones)?.col ?? null
+}
+
+/* Lo mismo, pero devolviendo TAMBIÉN el prefijo que ganó, que es lo que hace falta para
+   saber a qué HUECO apunta una fila de variante: `ley-6-dor` gana con `ley-6`, así que el
+   hueco de `ley-6-dor:824` es `ley-6:824`. */
+export function tramoDe(tramo, colecciones) {
   let mejor = null
   for (const c of colecciones) {
     for (const p of c.prefijos) {
       if (tramo !== p && !tramo.startsWith(p + '-')) continue
-      if (!mejor || p.length > mejor.largo) mejor = { id: c.id, largo: p.length }
+      if (!mejor || p.length > mejor.prefijo.length) mejor = { col: c.id, prefijo: p }
     }
   }
-  return mejor?.id ?? null
+  return mejor
 }
 
 /* Cuántas cartas tiene cada persona EN CADA COLECCIÓN. Sin esto, la columna «Álbum»
@@ -152,7 +159,10 @@ async function porPersonaYColeccion(pool, colecciones) {
             COUNT(*) cartas, COALESCE(SUM(cantidad - 1), 0) repetidas
        FROM carta GROUP BY usuario_id, tramo`
   )
-  const filas = crudas.map((f) => ({ ...f, col: coleccionDe(f.tramo, colecciones) ?? '' }))
+  const filas = crudas.map((f) => {
+    const m = tramoDe(f.tramo, colecciones)
+    return { ...f, col: m?.col ?? '', prefijo: m?.prefijo ?? '' }
+  })
   /* SE SUMA, NO SE PISA. La consulta trae una fila por (persona, TRAMO) y una colección
      tiene muchos tramos: Cromeros son dieciséis. Asignando en vez de acumular, de cada
      persona sobrevivía un solo tramo — medido contra producción, alguien con 1842 cartas
@@ -162,10 +172,72 @@ async function porPersonaYColeccion(pool, colecciones) {
     if (!f.col) continue
     if (!mapa.has(f.usuario_id)) mapa.set(f.usuario_id, {})
     const suyo = mapa.get(f.usuario_id)
-    const antes = suyo[f.col] ?? { cartas: 0, repetidas: 0 }
+    const antes = suyo[f.col] ?? { cartas: 0, repetidas: 0, huecos: 0 }
     suyo[f.col] = {
       cartas: antes.cartas + Number(f.cartas),
       repetidas: antes.repetidas + Number(f.repetidas),
+      /* LOS HUECOS NO SON LAS FILAS, y confundirlos era el «% medio gagá» que Angel vio.
+         Una variante es una fila propia —`ley-6-dor:824`— pero NO es un hueco del álbum:
+         el hueco es la 824, y Leyenda tiene 1097. Dividiendo filas por huecos el panel
+         mezclaba dos unidades: arriba contaba variantes y abajo faltantes, podía pasarse
+         de 100%, y el tope que lo recortaba lo disfrazaba de «álbum completo».
+
+         Acá cada fila de un tramo BASE es un hueco, uno a uno. Las de variante se suman
+         aparte, más abajo, porque hay que mirar si el hueco ya estaba contado. */
+      huecos: antes.huecos + (f.prefijo === f.tramo ? Number(f.cartas) : 0),
+    }
+  }
+
+  /* LAS FILAS DE VARIANTE, una por una, que son las únicas que no se pueden contar en
+     bloque: dos fondos de la misma carta son UN hueco, y si además tenés la base ese hueco
+     ya está contado. Se traen sólo ésas —en producción son 13 de 8107— así que esto no
+     crece con la colección, crece con cuántas variantes carga la gente.
+
+     La consulta usa los prefijos como PARÁMETROS, no armando SQL con ellos: `leerColecciones`
+     ya los valida uno por uno, pero no construir texto SQL con lo que manda el cliente es
+     más barato que confiar en la validación. */
+  const prefijos = colecciones.flatMap((c) => c.prefijos)
+  const [deVariante] = await pool.query(
+    `SELECT usuario_id, clave FROM carta
+      WHERE SUBSTRING_INDEX(clave, ':', 1) NOT IN (?)`, [prefijos]
+  )
+
+  /* De cada una: a qué hueco apunta. Un Set por persona, así dos fondos de la misma carta
+     cuentan una vez. */
+  const huecosSueltos = new Map()   // usuario -> Map(col -> Set(hueco))
+  const aChequear = []              // los que habría que mirar si ya tienen la base
+  for (const f of deVariante) {
+    const corte = f.clave.lastIndexOf(':')
+    if (corte < 0) continue
+    const m = tramoDe(f.clave.slice(0, corte), colecciones)
+    if (!m) continue
+    const hueco = `${m.prefijo}:${f.clave.slice(corte + 1)}`
+    if (!huecosSueltos.has(f.usuario_id)) huecosSueltos.set(f.usuario_id, new Map())
+    const suyos = huecosSueltos.get(f.usuario_id)
+    if (!suyos.has(m.col)) suyos.set(m.col, new Set())
+    if (suyos.get(m.col).has(hueco)) continue
+    suyos.get(m.col).add(hueco)
+    aChequear.push([f.usuario_id, hueco])
+  }
+
+  /* Y cuáles de esos huecos YA los cubre una fila base. Sin esto, tener la 824 y además la
+     824 dorada contaría dos huecos y el porcentaje volvería a pasarse. Es un `IN` sobre
+     pares concretos: tan chico como la lista de arriba. */
+  const conBase = new Set()
+  if (aChequear.length) {
+    const [filasBase] = await pool.query(
+      'SELECT usuario_id, clave FROM carta WHERE (usuario_id, clave) IN (?)', [aChequear]
+    )
+    for (const f of filasBase) conBase.add(`${f.usuario_id}|${f.clave}`)
+  }
+  for (const [usuario, suyos] of huecosSueltos) {
+    for (const [col, huecos] of suyos) {
+      const nuevos = [...huecos].filter((h) => !conBase.has(`${usuario}|${h}`)).length
+      if (!nuevos) continue
+      if (!mapa.has(usuario)) mapa.set(usuario, {})
+      const suyo = mapa.get(usuario)
+      const antes = suyo[col] ?? { cartas: 0, repetidas: 0, huecos: 0 }
+      suyo[col] = { ...antes, huecos: antes.huecos + nuevos }
     }
   }
 
@@ -175,9 +247,10 @@ async function porPersonaYColeccion(pool, colecciones) {
   const totales = new Map()
   for (const suyo of mapa.values()) {
     for (const [col, v] of Object.entries(suyo)) {
-      const t = totales.get(col) ?? { col, cartas: 0, repetidas: 0, personas: 0 }
+      const t = totales.get(col) ?? { col, cartas: 0, repetidas: 0, huecos: 0, personas: 0 }
       t.cartas += v.cartas
       t.repetidas += v.repetidas
+      t.huecos += v.huecos
       t.personas += 1
       totales.set(col, t)
     }

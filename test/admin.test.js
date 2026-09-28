@@ -194,6 +194,49 @@ test('el admin ve los números, y cuadran con lo que hay', async () => {
   assert.equal(d.gente[0].usuario, ADMIN)
 })
 
+/* EL PORCENTAJE DEL PANEL MEZCLABA DOS UNIDADES, y Angel lo vio: «el contador % de leyenda
+   está medio gagá — por un lado es % de las que te faltan y por otro lado % de las
+   variantes». Tenía razón. El numerador eran FILAS de la base, y una variante es una fila
+   propia; el denominador eran los HUECOS del álbum, y una variante nunca es un hueco. Con
+   eso el número podía pasarse de 100% y el tope que lo recortaba lo disfrazaba de «álbum
+   completo».
+
+   Acá se siembra exactamente ese caso: una carta con su base y dos fondos —tres filas, UN
+   hueco— y otra que existe SÓLO en un fondo, sin la base, que es un hueco igual. */
+test('el panel cuenta HUECOS y no filas: una carta en tres fondos es un hueco', async () => {
+  const jefe = await registrar(ADMIN)
+  const marcar = (clave) =>
+    app.inject({ method: 'PUT', url: `/api/cartas/${clave}`, headers: auth(jefe), payload: { cantidad: 1 } })
+
+  await marcar('ley-6:824')       // la base
+  await marcar('ley-6-dor:824')   // el mismo hueco, en dorado
+  await marcar('ley-6-pla:824')   // el mismo hueco, en plata
+  await marcar('ley-6-cya:900')   // un hueco que sólo tenés en un fondo: la base no está
+  await marcar('exp-1:5')         // y una de la otra colección, sin variantes
+
+  const cols = encodeURIComponent(JSON.stringify({ cromeros: ['exp-1'], leyenda: ['ley-6'] }))
+  const r = await app.inject({ method: 'GET', url: `/api/admin/resumen?cols=${cols}`, headers: auth(jefe) })
+  assert.equal(r.statusCode, 200, r.body)
+  const d = r.json()
+
+  const suyo = d.gente.find((g) => g.usuario === ADMIN).porColeccion
+  assert.equal(suyo.leyenda.cartas, 4, 'son cuatro FILAS: la base, dos fondos y la 900 en cyan')
+  assert.equal(suyo.leyenda.huecos, 2,
+    'pero DOS huecos: la 824 —esté en los fondos que esté— y la 900')
+  assert.equal(suyo.cromeros.cartas, 1)
+  assert.equal(suyo.cromeros.huecos, 1, 'sin variantes, una fila es un hueco')
+
+  /* Y el total por colección tiene que sumar lo mismo, o el panel se contradice consigo. */
+  const ley = d.porColeccion.find((c) => c.col === 'leyenda')
+  assert.equal(ley.cartas, 4)
+  assert.equal(ley.huecos, 2)
+
+  /* LA PRUEBA DE QUE EL BUG ESTÁ ARREGLADO: contra 1097 huecos, las filas darían más que
+     los huecos. Con un álbum chico se ve en el porcentaje mismo. */
+  assert.ok(suyo.leyenda.huecos < suyo.leyenda.cartas,
+    'si esto no se cumple es que se están contando filas otra vez')
+})
+
 /* #81. `volvieron` es EL número del panel: la pregunta no es cuánta gente entra sino
    cuánta vuelve. Es además el que ya estuvo mal una vez —se contaba con `sesion`, que
    dura 30 días, y el que entraba una vez y usaba la app todos los días figuraba como

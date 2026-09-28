@@ -9,7 +9,37 @@
 // de variante, que es lo que `coleccionDe` resuelve más abajo.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { leerColecciones, coleccionDe } from '../src/estadisticas.js'
+import { leerColecciones, coleccionDe, tramoDe } from '../src/estadisticas.js'
+
+/* A QUÉ HUECO APUNTA UN TRAMO, que es lo que hace falta para que el porcentaje del panel
+   no mezcle unidades. `ley-6-dor:824` es una fila propia pero NO es un hueco del álbum: el
+   hueco es la 824. Sin esto, el numerador contaba variantes y el denominador huecos, el
+   número podía pasarse de 100% y el tope lo recortaba disfrazándolo de álbum completo. */
+test('tramoDe devuelve el prefijo que gana, no sólo la colección', () => {
+  const cols = [
+    { id: 'cromeros', prefijos: ['exp-1', 'exp-2'] },
+    { id: 'leyenda', prefijos: ['ley-6', 'ley-2-3', 'ley-personajes'] },
+  ]
+  assert.deepEqual(tramoDe('ley-6', cols), { col: 'leyenda', prefijo: 'ley-6' })
+  assert.deepEqual(tramoDe('ley-6-dor', cols), { col: 'leyenda', prefijo: 'ley-6' },
+    'la variante apunta al hueco de su expansión')
+  /* Un id con guiones adentro NO se puede partir por guion: `ley-2-3` es la expansión. */
+  assert.deepEqual(tramoDe('ley-2-3', cols), { col: 'leyenda', prefijo: 'ley-2-3' })
+  assert.deepEqual(tramoDe('ley-2-3-pla', cols), { col: 'leyenda', prefijo: 'ley-2-3' })
+  assert.equal(tramoDe('otra-cosa', cols), null)
+  /* Y gana el MÁS LARGO, que es lo que evita que una variante se le cuelgue a otra
+     expansión cuando un id es prefijo de otro. */
+  const anidados = [{ id: 'x', prefijos: ['ley', 'ley-6'] }]
+  assert.equal(tramoDe('ley-6-dor', anidados).prefijo, 'ley-6')
+})
+
+test('coleccionDe sigue contestando lo mismo que antes', () => {
+  /* Se reescribió encima de `tramoDe`, así que lo que importa es que no haya cambiado. */
+  const cols = [{ id: 'leyenda', prefijos: ['ley-6'] }]
+  assert.equal(coleccionDe('ley-6', cols), 'leyenda')
+  assert.equal(coleccionDe('ley-6-dor', cols), 'leyenda')
+  assert.equal(coleccionDe('exp-1', cols), null)
+})
 
 test('sin parámetro, o con basura, devuelve null y el panel sigue andando', () => {
   for (const malo of [undefined, null, '', 'no es json', '[]', '"texto"', '123',
