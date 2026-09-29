@@ -73,6 +73,33 @@ const TABLAS = [
      PRIMARY KEY (day, k)
    ) ${COLACION}`,
 
+  /* PERSONAS DISTINTAS, no cargas. Lo pidió Angel el 2026-09-29: «si es la misma persona
+     10 veces cuenta 1, pero si son 10 personas cuentan 10, aunque tengan sesión». Eso no
+     se puede sin identificar al navegador, así que el `vid` es un ID AL AZAR de 16 hex
+     que la landing guarda en localStorage — anónimo, first-party, sin un solo dato de la
+     persona: acá no hay IP, ni nombre, ni nada que cruce con `usuario`. «Misma persona»
+     quiere decir «mismo navegador», que es el techo honesto de esta medición.
+
+     `visitor` es el resumen por navegador (con qué aparato, si tenía sesión, cuántas
+     veces vino); `visitor_day` es la presencia por día, para la tira de únicos diarios.
+     El vid se valida con forma exacta antes de tocar la base: uno inventado que no sea
+     16 hex no inserta nada. */
+  `CREATE TABLE IF NOT EXISTS visitor (
+     vid          CHAR(16)         NOT NULL PRIMARY KEY,
+     first_day    DATE             NOT NULL,
+     last_day     DATE             NOT NULL,
+     visits       INT UNSIGNED     NOT NULL DEFAULT 1,
+     with_session TINYINT UNSIGNED NOT NULL DEFAULT 0,
+     standalone   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+     device       VARCHAR(12)      NOT NULL DEFAULT 'otro'
+   ) ${COLACION}`,
+
+  `CREATE TABLE IF NOT EXISTS visitor_day (
+     day DATE     NOT NULL,
+     vid CHAR(16) NOT NULL,
+     PRIMARY KEY (day, vid)
+   ) ${COLACION}`,
+
   // No tener una carta no es una fila con un cero: es no tener fila.
   `CREATE TABLE IF NOT EXISTS carta (
      usuario_id INT UNSIGNED     NOT NULL,

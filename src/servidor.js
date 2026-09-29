@@ -12,7 +12,7 @@ import {
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
 import { anotarVisita, resumen, leerColecciones, salud, hoyAca } from './estadisticas.js'
-import { recordPulse } from './pulse.js'
+import { recordPulse, recordVisit } from './pulse.js'
 import { createLimiter, WINDOW as VENTANA } from './limiter.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
@@ -412,8 +412,11 @@ export function crearApp(pool, poolSalud = pool) {
     listo(null, cuerpo)
   )
   app.post('/api/pulse', { bodyLimit: 512 }, async (pedido, respuesta) => {
-    const key = typeof pedido.body === 'string' ? pedido.body.trim() : ''
-    recordPulse(pool, key, hoyAca())
+    const body = typeof pedido.body === 'string' ? pedido.body.trim() : ''
+    /* `v1|…` es la visita a la landing con su visitante único; lo demás, los contadores
+       de siempre. El User-Agent se clasifica en el servidor y no se guarda crudo. */
+    if (body.startsWith('v1|')) recordVisit(pool, body, hoyAca(), pedido.headers['user-agent'])
+    else recordPulse(pool, body, hoyAca())
     return respuesta.code(204).send()
   })
 

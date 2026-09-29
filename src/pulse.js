@@ -30,6 +30,51 @@ export const PULSE_KEYS = new Set([
   'login:direct',
 ])
 
+/* EL VISITANTE ÚNICO. El cuerpo del beacon de la landing es `v1|<vid>|<sesion>|<app>`:
+   un ID anónimo de 16 hex que vive en el localStorage del navegador, y dos banderas.
+   Personas = navegadores distintos, que es el techo honesto sin invadir a nadie.
+
+   El aparato sale del User-Agent del MISMO pedido, en el servidor: no viaja nada extra
+   y la clasificación es gruesa a propósito — para un reparto porcentual alcanza y sobra,
+   y no se guarda el UA crudo, que es una huella. */
+const VID = /^[a-f0-9]{16}$/
+
+export function deviceOf(ua = '') {
+  if (/iPhone/.test(ua)) return 'iphone'
+  if (/iPad/.test(ua)) return 'ipad'
+  if (/Android/.test(ua)) return 'android'
+  if (/Windows/.test(ua)) return 'windows'
+  if (/Macintosh/.test(ua)) return 'mac'
+  return 'otro'
+}
+
+/* Cada carga de la landing es UNA visita cruda (el contador `landing` de siempre) y,
+   si el vid tiene forma, un upsert del visitante y su presencia del día. Un vid
+   inventado que no sea 16 hex sólo cuenta la visita cruda. */
+export function recordVisit(pool, raw, day, ua) {
+  const [, vid = '', session = '0', standalone = '0'] = String(raw).split('|')
+  const jobs = [recordPulse(pool, 'landing', day)]
+  if (VID.test(vid)) {
+    jobs.push(
+      pool
+        .query(
+          `INSERT INTO visitor (vid, first_day, last_day, visits, with_session, standalone, device)
+             VALUES (?, ?, ?, 1, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               last_day = VALUES(last_day),
+               visits = visits + 1,
+               with_session = GREATEST(with_session, VALUES(with_session)),
+               standalone = GREATEST(standalone, VALUES(standalone)),
+               device = VALUES(device)`,
+          [vid, day, day, session === '1' ? 1 : 0, standalone === '1' ? 1 : 0, deviceOf(ua)]
+        )
+        .catch(() => {}),
+      pool.query('INSERT IGNORE INTO visitor_day (day, vid) VALUES (?, ?)', [day, vid]).catch(() => {})
+    )
+  }
+  return Promise.all(jobs)
+}
+
 /* Sin await en quien llama, igual que `anotarVisita`: nadie tiene que esperar por una
    estadística. Devuelve la promesa por si los tests quieren esperarla. */
 export function recordPulse(pool, key, day) {
@@ -65,6 +110,26 @@ export async function funnelSummary(pool, today) {
     [today]
   )
 
+  /* Las PERSONAS, aparte de las cargas. Totales del resumen por navegador, únicos de
+     hoy y por día de `visitor_day`, y el reparto por aparato. Todo junto y con Number()
+     porque los SUM() vuelven como texto. */
+  const [[uni]] = await pool.query(
+    `SELECT COUNT(*) total, COALESCE(SUM(with_session), 0) conCuenta,
+            COALESCE(SUM(standalone), 0) desdeApp, COALESCE(SUM(visits), 0) cargas
+       FROM visitor`
+  )
+  const [[uniHoy]] = await pool.query(
+    'SELECT COUNT(*) n FROM visitor_day WHERE day = ?', [today]
+  )
+  const [uniDays] = await pool.query(
+    `SELECT DATE_FORMAT(day, '%Y-%m-%d') dia, COUNT(*) n FROM visitor_day
+      WHERE day > DATE_SUB(?, INTERVAL 14 DAY) GROUP BY day ORDER BY day`,
+    [today]
+  )
+  const [devices] = await pool.query(
+    'SELECT device, COUNT(*) n FROM visitor GROUP BY device ORDER BY n DESC'
+  )
+
   return {
     since,
     days: days.map((f) => ({ dia: f.dia, n: Number(f.n) })),
@@ -73,5 +138,13 @@ export async function funnelSummary(pool, today) {
     /* Los dos caminos que salen de la landing: a anotarse, y a entrar con cuenta. */
     toSignup: sum('login:hero', 'login:closing'),
     toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
+    visitors: {
+      total: Number(uni.total),
+      today: Number(uniHoy.n),
+      withSession: Number(uni.conCuenta),
+      standalone: Number(uni.desdeApp),
+      days: uniDays.map((f) => ({ dia: f.dia, n: Number(f.n) })),
+      devices: devices.map((f) => ({ device: f.device, n: Number(f.n) })),
+    },
   }
 }
