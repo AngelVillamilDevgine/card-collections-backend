@@ -11,7 +11,8 @@ import {
   cambiarClave, cerrarLasDemas,
 } from './auth.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
-import { anotarVisita, resumen, leerColecciones, salud } from './estadisticas.js'
+import { anotarVisita, resumen, leerColecciones, salud, hoyAca } from './estadisticas.js'
+import { recordPulse } from './pulse.js'
 import { createLimiter, WINDOW as VENTANA } from './limiter.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
@@ -396,6 +397,24 @@ export function crearApp(pool, poolSalud = pool) {
       return respuesta.code(503).send({ bien: false, error: 'sin base' })
     }
     return { bien: true, version: process.env.DBZ_VERSION ?? 'dev' }
+  })
+
+  /* EL PULSO DE LA PASARELA. Sin sesión a propósito: cuenta el tramo de ANTES de tener
+     cuenta — la landing, y con qué botón se llegó al formulario. El cuerpo es texto plano
+     y no JSON para que el POST sea un pedido simple: sin OPTIONS previo, que es el mismo
+     viaje de más que este archivo ya pagó una vez con el maxAge.
+
+     Contesta 204 SIEMPRE, valga o no la clave: un contador no es un oráculo, y la lista
+     blanca de `pulse.js` ya decide qué se anota. Sin await, como `anotarVisita`: nadie
+     espera por una estadística. El `bodyLimit` chico es porque la clave más larga mide
+     18 letras y el límite global son 2 MB. */
+  app.addContentTypeParser(/^text\/plain/, { parseAs: 'string' }, (pedido, cuerpo, listo) =>
+    listo(null, cuerpo)
+  )
+  app.post('/api/pulse', { bodyLimit: 512 }, async (pedido, respuesta) => {
+    const key = typeof pedido.body === 'string' ? pedido.body.trim() : ''
+    recordPulse(pool, key, hoyAca())
+    return respuesta.code(204).send()
   })
 
   return app

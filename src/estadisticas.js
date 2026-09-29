@@ -11,6 +11,8 @@
    tenga cargadas las tablas de husos (los desplazamientos numéricos andan siempre). */
 const aca = (col) => `CONVERT_TZ(${col}, '+00:00', '-03:00')`
 
+import { funnelSummary } from './pulse.js'
+
 /* Cuánta gente entra en la tabla de «uno por uno». No es por el motor —se midió, y lo
    que cuesta es recorrer `carta`, que hay que recorrer igual— sino por lo que viaja:
    con 1000 cuentas la respuesta pasaba de 112 KB, y el panel lo abre alguien desde el
@@ -380,6 +382,19 @@ export async function resumen(pool, colecciones = null) {
   const partido = await porPersonaYColeccion(pool, colecciones)
   const porPersona = partido?.porPersona ?? null
 
+  /* LA PASARELA, si ya midió algo. Los contadores anónimos arrancaron el 2026-09-29, así
+     que el «se anotaron» de la pasarela se corta en su propio arranque: comparar visitas
+     de hoy contra las 42 altas históricas daría una conversión absurda. `signups` son las
+     altas DESDE que la pasarela existe — mismo día local que todo lo demás. */
+  const funnel = await funnelSummary(pool, hoyAca())
+  if (funnel) {
+    funnel.signups = await una(
+      pool,
+      `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) >= ?`,
+      [funnel.since]
+    )
+  }
+
   return {
     salud: await salud(pool),
     /* Acá había un `total: 1936` escrito a mano, que es el tamaño del catálogo. El
@@ -409,6 +424,9 @@ export async function resumen(pool, colecciones = null) {
        «28 cuentas · 13 con cartas» salen de los números de arriba, no de contar filas
        de la tabla. Es la misma lección del #97 — una tabla que muestra una parte no
        puede ser la fuente de un total. */
+    /* `null` mientras no haya ni una fila de pulso: el panel no dibuja una pasarela de
+       ceros, igual que no parte por colección cuando el back es más viejo que el front. */
+    funnel,
     tope: TOPE_GENTE,
     /* Qué colecciones se pidieron, para que el front no tenga que adivinar si la
        respuesta viene partida o no (un back viejo no la parte). */

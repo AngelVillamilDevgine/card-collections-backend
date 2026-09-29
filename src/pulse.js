@@ -1,0 +1,77 @@
+/* La pasarela: contadores anónimos de lo que pasa ANTES de tener cuenta.
+ *
+ * `visita` no puede ver ese tramo — tiene FOREIGN KEY a usuario, así que la base no
+ * puede guardar una visita sin cuenta ni queriendo. Esto lo cubre con lo mínimo que
+ * alcanza: una fila por (día, clave) y un contador. Sin IPs, sin cookies, sin
+ * identificadores: son visitas, no personas, y el panel lo dice con esas palabras.
+ *
+ * LA LISTA BLANCA ES EL DISEÑO. La clave la manda el cliente, así que sin lista un
+ * script cualquiera crearía filas a voluntad. Con ella, lo peor que puede hacer quien
+ * inunde el endpoint es inflar un contador informativo — filas nuevas no puede crear:
+ * el techo de filas es (claves × días), o sea seis por día.
+ *
+ * Quién manda cada clave:
+ *   landing              temprano.js, al cargar la landing sin sesión
+ *   login:hero           «Anotá tus faltantes» del héroe            (?f=hero)
+ *   login:closing        «Anotá tus faltantes» del cierre           (?f=closing)
+ *   login:hero-acct      «Ya tengo cuenta» del héroe                (?f=hero-acct)
+ *   login:closing-acct   «Ya tengo cuenta» del cierre               (?f=closing-acct)
+ *   login:direct         el formulario sin venir de la landing (URL directa, marcador)
+ *
+ * Sin dependencias a propósito: el día llega por parámetro (quien llama ya tiene
+ * `hoyAca()`) y así esto se prueba solo, sin base y sin reloj. */
+
+export const PULSE_KEYS = new Set([
+  'landing',
+  'login:hero',
+  'login:closing',
+  'login:hero-acct',
+  'login:closing-acct',
+  'login:direct',
+])
+
+/* Sin await en quien llama, igual que `anotarVisita`: nadie tiene que esperar por una
+   estadística. Devuelve la promesa por si los tests quieren esperarla. */
+export function recordPulse(pool, key, day) {
+  if (!PULSE_KEYS.has(key)) return null
+  return pool
+    .query(
+      'INSERT INTO pulse (day, k, n) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE n = n + 1',
+      [day, key]
+    )
+    .catch(() => {})
+}
+
+/* Lo que el panel dibuja. `null` mientras no haya ni una fila: una pasarela que todavía
+   no midió nada no es una pasarela de ceros — el panel directamente no la muestra, igual
+   que hace con `porColeccion` cuando el back es más viejo que el front. */
+export async function funnelSummary(pool, today) {
+  const [totals] = await pool.query('SELECT k, SUM(n) n FROM pulse GROUP BY k')
+  if (!totals.length) return null
+
+  const byKey = {}
+  for (const f of totals) byKey[f.k] = Number(f.n)
+  const sum = (...keys) => keys.reduce((a, k) => a + (byKey[k] ?? 0), 0)
+
+  const [[{ since }]] = await pool.query(
+    "SELECT DATE_FORMAT(MIN(day), '%Y-%m-%d') since FROM pulse"
+  )
+  /* Los catorce días de la landing, para la tira. Los días sin nadie no vienen: el
+     panel ya sabe rellenarlos, igual que con `actividad`. */
+  const [days] = await pool.query(
+    `SELECT DATE_FORMAT(day, '%Y-%m-%d') dia, n FROM pulse
+      WHERE k = 'landing' AND day > DATE_SUB(?, INTERVAL 14 DAY)
+      ORDER BY day`,
+    [today]
+  )
+
+  return {
+    since,
+    days: days.map((f) => ({ dia: f.dia, n: Number(f.n) })),
+    byKey,
+    landing: byKey.landing ?? 0,
+    /* Los dos caminos que salen de la landing: a anotarse, y a entrar con cuenta. */
+    toSignup: sum('login:hero', 'login:closing'),
+    toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
+  }
+}

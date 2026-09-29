@@ -56,6 +56,23 @@ const TABLAS = [
        REFERENCES usuario(id) ON DELETE CASCADE
    ) ${COLACION}`,
 
+  /* LA PASARELA: contadores anónimos por día, para el escalón que `visita` no puede ver
+     — el de ANTES de tener cuenta. Lo pidió Angel el 2026-09-29 («faltan gráficos de
+     visitantes, registros, clicks») y hasta ese día de ese tramo no existía un solo dato.
+
+     Es la alternativa first-party al beacon de Cloudflare que estaba pendiente: los datos
+     quedan en NUESTRO panel, no hay que abrirle la CSP a un CDN ajeno, y el riesgo
+     documentado del token desaparece de raíz. Una fila por (día, clave) y un número que
+     se incrementa: sin IPs, sin cookies, sin identificadores — no se puede filtrar lo que
+     nunca se guardó. Las claves válidas viven en `pulse.js` (lista blanca): inundar el
+     endpoint infla un contador informativo, no crea filas. */
+  `CREATE TABLE IF NOT EXISTS pulse (
+     day DATE         NOT NULL,
+     k   VARCHAR(24)  NOT NULL,
+     n   INT UNSIGNED NOT NULL DEFAULT 0,
+     PRIMARY KEY (day, k)
+   ) ${COLACION}`,
+
   // No tener una carta no es una fila con un cero: es no tener fila.
   `CREATE TABLE IF NOT EXISTS carta (
      usuario_id INT UNSIGNED     NOT NULL,
