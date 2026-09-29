@@ -260,6 +260,90 @@ async function porPersonaYColeccion(pool, colecciones) {
   return { porPersona: mapa, totales: [...totales.values()] }
 }
 
+/* ---------- LOS PERÍODOS DEL PANEL: hoy, 7 días, este mes, el mes pasado ----------
+ *
+ * Lo pidió Angel el 2026-09-29: «todo el dashboard filtrado por 1 día, 1 semana, mes
+ * actual, mes pasado». El filtro es un conjunto CERRADO, así que el servidor precalcula
+ * el paquete de cada período — y el de su período ANTERIOR equivalente, para el «antes».
+ *
+ * Los únicos por período NO salen de sumar los diarios: la misma persona en tres días
+ * sumaría tres. Cada paquete cuenta con COUNT(DISTINCT) sobre su rango. Y el «anterior»
+ * de «este mes» es el MISMO TRAMO del mes pasado (del 1 al mismo día), no el mes entero:
+ * comparar 29 días contra 31 diría que todo empeoró.
+ *
+ * Fechas como texto YYYY-MM-DD en hora local (la de `hoyAca`), aritmética a mediodía UTC
+ * para que ningún huso la corra de día. */
+const D = (s) => new Date(`${s}T12:00:00Z`)
+const S = (d) => d.toISOString().slice(0, 10)
+const addDays = (s, n) => { const d = D(s); d.setUTCDate(d.getUTCDate() + n); return S(d) }
+const monthStart = (s) => s.slice(0, 8) + '01'
+
+export function periodRanges(hoy) {
+  const ayer = addDays(hoy, -1)
+  const mIni = monthStart(hoy)
+  const pmFin = addDays(mIni, -1)
+  const pmIni = monthStart(pmFin)
+  const ppmFin = addDays(pmIni, -1)
+  const transcurridos = D(hoy).getUTCDate() // día del mes, 1..31
+  // el mismo tramo del mes pasado, capado a su último día (un 31 contra febrero)
+  const pmMismoTramo = S(new Date(Math.min(D(addDays(pmIni, transcurridos - 1)), D(pmFin))))
+  return {
+    hoy: { desde: hoy, hasta: hoy, antes: { desde: ayer, hasta: ayer } },
+    semana: { desde: addDays(hoy, -6), hasta: hoy, antes: { desde: addDays(hoy, -13), hasta: addDays(hoy, -7) } },
+    mes: { desde: mIni, hasta: hoy, antes: { desde: pmIni, hasta: pmMismoTramo } },
+    mesPasado: { desde: pmIni, hasta: pmFin, antes: { desde: monthStart(ppmFin), hasta: ppmFin } },
+  }
+}
+
+/* El paquete de un rango: todo lo que el panel muestra filtrado. `moved` usa
+   `carta.marked_at`, que las filas anteriores a su migración tienen en NULL — esas
+   quedan afuera de todos los rangos por igual, que es lo honesto que se puede. */
+async function rangePack(pool, desde, hasta) {
+  const [visitors, visitorsNew, signups, usedApp, [pulsos], [moved], [devices]] = await Promise.all([
+    una(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [desde, hasta]),
+    una(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [desde, hasta]),
+    una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) BETWEEN ? AND ?`, [desde, hasta]),
+    una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE dia BETWEEN ? AND ?', [desde, hasta]),
+    pool.query('SELECT k, SUM(n) n FROM pulse WHERE day BETWEEN ? AND ? GROUP BY k', [desde, hasta]),
+    pool.query(
+      `SELECT COUNT(DISTINCT usuario_id) gente, COUNT(*) cartas FROM carta
+        WHERE marked_at IS NOT NULL AND DATE(${aca('marked_at')}) BETWEEN ? AND ?`,
+      [desde, hasta]
+    ),
+    pool.query(
+      `SELECT v.device, COUNT(DISTINCT vd.vid) n
+         FROM visitor_day vd JOIN visitor v ON v.vid = vd.vid
+        WHERE vd.day BETWEEN ? AND ? GROUP BY v.device ORDER BY n DESC`,
+      [desde, hasta]
+    ),
+  ])
+  const porClave = {}
+  for (const f of pulsos) porClave[f.k] = Number(f.n)
+  const suma = (...ks) => ks.reduce((a, k) => a + (porClave[k] ?? 0), 0)
+  return {
+    desde, hasta,
+    visitors, visitorsNew, signups, usedApp,
+    landing: porClave.landing ?? 0,
+    toSignup: suma('login:hero', 'login:closing'),
+    toLogin: suma('login:hero-acct', 'login:closing-acct', 'login:direct'),
+    moved: { gente: Number(moved[0]?.gente ?? 0), cartas: Number(moved[0]?.cartas ?? 0) },
+    devices: devices.map((f) => ({ device: f.device, n: Number(f.n) })),
+  }
+}
+
+export async function periodSummaries(pool, hoy) {
+  const rangos = periodRanges(hoy)
+  const salida = {}
+  for (const [nombre, r] of Object.entries(rangos)) {
+    const [actual, antes] = await Promise.all([
+      rangePack(pool, r.desde, r.hasta),
+      rangePack(pool, r.antes.desde, r.antes.hasta),
+    ])
+    salida[nombre] = { ...actual, antes }
+  }
+  return salida
+}
+
 export async function resumen(pool, colecciones = null) {
   const [usuarios, conCartas, cartas, repetidas, altas7, altasHoy, volvieron, activosHoy, activos7, conApp] =
     await Promise.all([
@@ -286,9 +370,11 @@ export async function resumen(pool, colecciones = null) {
       una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE app = 1'),
     ])
 
+  /* 62 días y no 14: alcanza para dibujar el mes pasado entero con margen. Quien quiera
+     14 recorta — el eje lo arma el panel. */
   const [porDia] = await pool.query(
     `SELECT DATE_FORMAT(${aca('creado')}, '%Y-%m-%d') dia, COUNT(*) cuantos FROM usuario
-      WHERE DATE(${aca('creado')}) > DATE_SUB(?, INTERVAL 14 DAY)
+      WHERE DATE(${aca('creado')}) > DATE_SUB(?, INTERVAL 62 DAY)
       GROUP BY dia ORDER BY dia`,
     [hoyAca()]
   )
@@ -319,7 +405,7 @@ export async function resumen(pool, colecciones = null) {
      dicen si alguien sigue ahí al día siguiente. */
   const [actividad] = await pool.query(
     `SELECT DATE_FORMAT(dia, '%Y-%m-%d') dia, COUNT(*) personas, COALESCE(SUM(app), 0) porApp
-       FROM visita WHERE dia > DATE_SUB(?, INTERVAL 14 DAY)
+       FROM visita WHERE dia > DATE_SUB(?, INTERVAL 62 DAY)
       GROUP BY dia ORDER BY dia`,
     [hoyAca()]
   )
@@ -397,6 +483,8 @@ export async function resumen(pool, colecciones = null) {
 
   return {
     salud: await salud(pool),
+    /* Los cuatro períodos del filtro, cada uno con su «antes». Un front viejo lo ignora. */
+    periodos: await periodSummaries(pool, hoyAca()),
     /* Acá había un `total: 1936` escrito a mano, que es el tamaño del catálogo. El
        catálogo vive en el front y se edita sin recompilar nada, así que el día que
        cambiara, el panel iba a seguir calculando los porcentajes de la columna «Álbum»

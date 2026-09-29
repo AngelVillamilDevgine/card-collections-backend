@@ -101,11 +101,11 @@ export async function funnelSummary(pool, today) {
   const [[{ since }]] = await pool.query(
     "SELECT DATE_FORMAT(MIN(day), '%Y-%m-%d') since FROM pulse"
   )
-  /* Los catorce días de la landing, para la tira. Los días sin nadie no vienen: el
-     panel ya sabe rellenarlos, igual que con `actividad`. */
+  /* 62 días de la landing, para que el panel pueda dibujar el mes pasado entero. Los
+     días sin nadie no vienen: el panel ya sabe rellenarlos, igual que con `actividad`. */
   const [days] = await pool.query(
     `SELECT DATE_FORMAT(day, '%Y-%m-%d') dia, n FROM pulse
-      WHERE k = 'landing' AND day > DATE_SUB(?, INTERVAL 14 DAY)
+      WHERE k = 'landing' AND day > DATE_SUB(?, INTERVAL 62 DAY)
       ORDER BY day`,
     [today]
   )
@@ -123,7 +123,7 @@ export async function funnelSummary(pool, today) {
   )
   const [uniDays] = await pool.query(
     `SELECT DATE_FORMAT(day, '%Y-%m-%d') dia, COUNT(*) n FROM visitor_day
-      WHERE day > DATE_SUB(?, INTERVAL 14 DAY) GROUP BY day ORDER BY day`,
+      WHERE day > DATE_SUB(?, INTERVAL 62 DAY) GROUP BY day ORDER BY day`,
     [today]
   )
   const [devices] = await pool.query(
