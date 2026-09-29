@@ -29,29 +29,17 @@ beforeEach(async () => {
 
 test('los rangos: semana de 7, mes desde el 1, y el mes pasado entero', () => {
   const r = periodRanges('2026-09-29')
-  assert.deepEqual(r.hoy, { desde: '2026-09-29', hasta: '2026-09-29', antes: { desde: '2026-09-28', hasta: '2026-09-28' } })
-  assert.deepEqual(r.semana, { desde: '2026-09-23', hasta: '2026-09-29', antes: { desde: '2026-09-16', hasta: '2026-09-22' } })
+  assert.deepEqual(r.hoy, { desde: '2026-09-29', hasta: '2026-09-29' })
+  assert.deepEqual(r.semana, { desde: '2026-09-23', hasta: '2026-09-29' })
   assert.equal(r.mes.desde, '2026-09-01')
   assert.equal(r.mes.hasta, '2026-09-29')
-  assert.deepEqual(r.mesPasado, { desde: '2026-08-01', hasta: '2026-08-31', antes: { desde: '2026-07-01', hasta: '2026-07-31' } })
-})
-
-test('el «antes» de este mes es el MISMO TRAMO del mes pasado, no el mes entero', () => {
-  const r = periodRanges('2026-09-29')
-  assert.deepEqual(r.mes.antes, { desde: '2026-08-01', hasta: '2026-08-29' })
-})
-
-test('el mismo tramo se capa al último día cuando el mes anterior es más corto', () => {
-  // 31 de marzo: el tramo equivalente de febrero termina el 28, no el 31.
-  const r = periodRanges('2026-03-31')
-  assert.deepEqual(r.mes.antes, { desde: '2026-02-01', hasta: '2026-02-28' })
+  assert.deepEqual(r.mesPasado, { desde: '2026-08-01', hasta: '2026-08-31' })
 })
 
 test('cruzando enero, el mes pasado es diciembre del año anterior', () => {
   const r = periodRanges('2026-01-15')
   assert.equal(r.mesPasado.desde, '2025-12-01')
   assert.equal(r.mesPasado.hasta, '2025-12-31')
-  assert.equal(r.mesPasado.antes.desde, '2025-11-01')
 })
 
 test('la misma persona en tres días de la semana cuenta UNA vez en el período', async () => {
@@ -83,15 +71,11 @@ test('el paquete junta altas, uso, movimiento de cartas y aparatos del rango', a
   assert.deepEqual(p.hoy.moved, { gente: 1, cartas: 1 })
   assert.deepEqual(p.hoy.devices, [{ device: 'iphone', n: 1 }])
   assert.equal(p.hoy.visitorsNew, 1)
-  /* Y ayer, vacío: el «antes» de hoy no hereda nada de hoy. */
-  assert.equal(p.hoy.antes.visitors, 0)
-  assert.equal(p.hoy.antes.signups, 0)
 })
 
 test('el resumen del panel lleva los cuatro períodos', async () => {
   const d = await resumen(pool)
   for (const k of ['hoy', 'semana', 'mes', 'mesPasado']) {
     assert.ok(d.periodos[k], `falta el período ${k}`)
-    assert.ok(d.periodos[k].antes, `el período ${k} no trae su antes`)
   }
 })
