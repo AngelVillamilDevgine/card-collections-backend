@@ -240,7 +240,7 @@ export function crearApp(pool, poolSalud = pool) {
     let fila = null
     if (typeof usuario === 'string') {
       const [filas] = await pool.query(
-        'SELECT id, usuario, hash FROM usuario WHERE usuario = ?', [usuario]
+        'SELECT id, usuario, hash, must_change FROM usuario WHERE usuario = ?', [usuario]
       )
       fila = filas[0] ?? null
     }
@@ -267,7 +267,13 @@ export function crearApp(pool, poolSalud = pool) {
     // propia serviría de botón de reinicio para seguir probando contra las ajenas.
     perdonar(suya)
     anotarVisita(pool, fila.id, pedido.query?.app === '1')
-    return { token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario) }
+    /* `mustChange`: entró con una clave provisoria (`bin/reset-password.js`) y la app no
+       lo deja seguir hasta que elija la suya. También viaja en `/api/yo`, así que
+       recargar la página no se lo saltea. */
+    return {
+      token: await crearSesion(pool, fila.id), usuario: fila.usuario, admin: esAdmin(fila.usuario),
+      mustChange: Number(fila.must_change) === 1,
+    }
   })
 
   app.delete('/api/sesion', { preHandler: conSesion }, async (pedido) => {
@@ -335,6 +341,7 @@ export function crearApp(pool, poolSalud = pool) {
     return {
       usuario: pedido.usuario.usuario,
       admin,
+      mustChange: Number(pedido.usuario.must_change) === 1,
       /* Si la consulta falla, la app tiene que andar igual: un aviso que no se puede leer
          no puede ser motivo de que no entres a tus cartas. */
       ...(admin ? { salud: await salud(pool).catch(() => null) } : {}),

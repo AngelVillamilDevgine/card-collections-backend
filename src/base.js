@@ -11,10 +11,12 @@ const COLACION = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_
 
 const TABLAS = [
   `CREATE TABLE IF NOT EXISTS usuario (
-     id       INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-     usuario  VARCHAR(64)  NOT NULL,
-     hash     VARCHAR(255) NOT NULL,
-     creado   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+     id          INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+     usuario     VARCHAR(64)  NOT NULL,
+     hash        VARCHAR(255) NOT NULL,
+     creado      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+     -- 1 = entró con una clave provisoria y tiene que elegir la suya. Ver addMustChange().
+     must_change TINYINT UNSIGNED NOT NULL DEFAULT 0,
      UNIQUE KEY usuario_unico (usuario)
    ) ${COLACION}`,
 
@@ -191,12 +193,31 @@ export async function prepararEsquema(pool) {
   await ensancharUsuario(pool)
   await columnaApp(pool)
   await addMarkedAt(pool)
+  await addMustChange(pool)
   await sembrarVisitas(pool)
 }
 
 /* `visita` nació sin la columna `app`, y CREATE TABLE IF NOT EXISTS no toca una tabla
    que ya existe. Igual que con el ancho de `usuario`: se agrega a mano, y sólo si
    falta. Cuenta si ese día entró desde la app instalada en el teléfono. */
+/* LA CLAVE PROVISORIA. Quien se olvida la clave le escribe a Angel por WhatsApp (el
+   servidor no puede mandar mail), y hasta el 2026-09-30 no había cómo resetearla: el
+   primer caso fue Gabriel Rivarola, con 2845 cartas cargadas. `bin/reset-password.js`
+   le pone una clave provisoria y prende esta marca; la app, al verla, no deja hacer nada
+   hasta elegir una clave propia, y `cambiarClave` la apaga. Así la provisoria —que viajó
+   por WhatsApp y la conocen dos personas— dura lo que tarda en entrar.
+
+   Migración aparte y no sólo en el CREATE, por lo de siempre: CREATE TABLE IF NOT EXISTS
+   no toca una tabla que ya está. */
+async function addMustChange(pool) {
+  const [filas] = await pool.query(
+    `SELECT 1 FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'must_change'`
+  )
+  if (!filas.length)
+    await pool.query('ALTER TABLE usuario ADD COLUMN must_change TINYINT UNSIGNED NOT NULL DEFAULT 0')
+}
+
 async function columnaApp(pool) {
   const [filas] = await pool.query(
     `SELECT 1 FROM information_schema.COLUMNS

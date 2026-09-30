@@ -87,14 +87,31 @@ export async function cambiarClave(pool, usuarioId, actual, nueva) {
   const [filas] = await pool.query('SELECT hash FROM usuario WHERE id = ?', [usuarioId])
   if (!filas.length) return false
   if (!(await claveCoincide(actual, filas[0].hash))) return false
-  await pool.query('UPDATE usuario SET hash = ? WHERE id = ?', [await hashearClave(nueva), usuarioId])
+  // Elegir una clave propia apaga la marca de la provisoria: es lo que la app espera.
+  await pool.query('UPDATE usuario SET hash = ?, must_change = 0 WHERE id = ?', [await hashearClave(nueva), usuarioId])
   return true
+}
+
+/* LA CLAVE PROVISORIA para quien se olvidó la suya. Ocho dígitos AL AZAR y no un
+   `12345678`: se dicta igual de fácil por WhatsApp, pero una clave fija es lo primero que
+   alguien prueba contra una cuenta mientras el dueño todavía no entró. `randomInt` es de
+   `crypto`, no `Math.random`. Prende `must_change`: la app no deja hacer nada hasta elegir
+   una propia. Las sesiones abiertas NO se tocan acá — el dueño puede seguir adentro en
+   otro aparato —: se cierran solas cuando elija la nueva, que es lo que ya hace
+   `/api/clave`. Devuelve la provisoria para dársela a la persona. */
+export async function resetPassword(pool, usuarioId) {
+  const temporal = String(crypto.randomInt(0, 100_000_000)).padStart(8, '0')
+  await pool.query(
+    'UPDATE usuario SET hash = ?, must_change = 1 WHERE id = ?',
+    [await hashearClave(temporal), usuarioId]
+  )
+  return temporal
 }
 
 export async function usuarioDeToken(pool, token) {
   if (!token) return null
   const [filas] = await pool.query(
-    `SELECT u.id, u.usuario
+    `SELECT u.id, u.usuario, u.must_change
        FROM sesion s JOIN usuario u ON u.id = s.usuario_id
       WHERE s.hash = ? AND s.vence > NOW()`,
     [hashDeToken(token)]
