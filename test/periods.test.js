@@ -63,11 +63,16 @@ test('el paquete junta altas, uso, movimiento de cartas y aparatos del rango', a
   await recordVisit(pool, 'v1|bbbb111122223333|0|0', hoy, 'iPhone OS')
   const [u] = await pool.query('INSERT INTO usuario (usuario, hash) VALUES (?, ?)', ['p@e.com', 'x'])
   await pool.query('INSERT INTO visita (usuario_id, dia) VALUES (?, ?)', [u.insertId, hoy])
+  /* Y un segundo que ese día entró como app instalada: el uso se parte por la bandera. */
+  const [u2] = await pool.query('INSERT INTO usuario (usuario, hash) VALUES (?, ?)', ['q@e.com', 'x'])
+  await pool.query('INSERT INTO visita (usuario_id, dia, app) VALUES (?, ?, 1)', [u2.insertId, hoy])
   // `marked_at` se llena solo con el timestamp de ahora: cae en el rango de hoy.
   await pool.query('INSERT INTO carta (usuario_id, clave, cantidad) VALUES (?, ?, 1)', [u.insertId, 'exp-1:1'])
   const p = await periodSummaries(pool, hoy)
-  assert.equal(p.hoy.signups, 1)
-  assert.equal(p.hoy.usedApp, 1)
+  assert.equal(p.hoy.signups, 2)
+  assert.equal(p.hoy.usedApp, 2)
+  assert.equal(p.hoy.usedWeb, 1)
+  assert.equal(p.hoy.usedInstalled, 1)
   assert.deepEqual(p.hoy.moved, { gente: 1, cartas: 1 })
   assert.deepEqual(p.hoy.devices, [{ device: 'iphone', n: 1 }])
   assert.equal(p.hoy.visitorsNew, 1)

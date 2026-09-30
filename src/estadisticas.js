@@ -298,11 +298,22 @@ export function periodRanges(hoy) {
    `carta.marked_at`, que las filas anteriores a su migración tienen en NULL — esas
    quedan afuera de todos los rangos por igual, que es lo honesto que se puede. */
 async function rangePack(pool, desde, hasta) {
-  const [visitors, visitorsNew, signups, usedApp, [pulsos], [moved], [devices]] = await Promise.all([
+  const [visitors, visitorsNew, signups, [[uso]], [pulsos], [moved], [devices]] = await Promise.all([
     una(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [desde, hasta]),
     una(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [desde, hasta]),
     una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) BETWEEN ? AND ?`, [desde, hasta]),
-    una(pool, 'SELECT COUNT(DISTINCT usuario_id) FROM visita WHERE dia BETWEEN ? AND ?', [desde, hasta]),
+    /* El uso, partido por la bandera del día: `app=1` es «ese día entró como app
+       instalada al menos una vez». Web y app pueden SOLAPARSE (lunes navegador, martes
+       app), así que las dos no tienen por qué sumar el total — el total sigue en
+       `usedApp` para la conversión de «movieron cartas». Lo pidió Angel: una estación
+       para la página y otra para la app. */
+    pool.query(
+      `SELECT COUNT(DISTINCT usuario_id) total,
+              COUNT(DISTINCT CASE WHEN app = 0 THEN usuario_id END) web,
+              COUNT(DISTINCT CASE WHEN app = 1 THEN usuario_id END) instalada
+         FROM visita WHERE dia BETWEEN ? AND ?`,
+      [desde, hasta]
+    ),
     pool.query('SELECT k, SUM(n) n FROM pulse WHERE day BETWEEN ? AND ? GROUP BY k', [desde, hasta]),
     pool.query(
       `SELECT COUNT(DISTINCT usuario_id) gente, COUNT(*) cartas FROM carta
@@ -321,7 +332,10 @@ async function rangePack(pool, desde, hasta) {
   const sum = (...ks) => ks.reduce((a, k) => a + (byKey[k] ?? 0), 0)
   return {
     desde, hasta,
-    visitors, visitorsNew, signups, usedApp,
+    visitors, visitorsNew, signups,
+    usedApp: Number(uso.total),
+    usedWeb: Number(uso.web),
+    usedInstalled: Number(uso.instalada),
     landing: byKey.landing ?? 0,
     toSignup: sum('login:hero', 'login:closing'),
     toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
