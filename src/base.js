@@ -17,6 +17,12 @@ const TABLAS = [
      creado      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
      -- 1 = entró con una clave provisoria y tiene que elegir la suya. Ver addMustChange().
      must_change TINYINT UNSIGNED NOT NULL DEFAULT 0,
+     -- «Mi perfil», todo opcional. Ver addProfileColumns() y profile.js.
+     first_name  VARCHAR(60)  NULL,
+     middle_name VARCHAR(60)  NULL,
+     last_name   VARCHAR(60)  NULL,
+     whatsapp    VARCHAR(30)  NULL,
+     city        VARCHAR(80)  NULL,
      UNIQUE KEY usuario_unico (usuario)
    ) ${COLACION}`,
 
@@ -194,6 +200,7 @@ export async function prepararEsquema(pool) {
   await columnaApp(pool)
   await addMarkedAt(pool)
   await addMustChange(pool)
+  await addProfileColumns(pool)
   await sembrarVisitas(pool)
 }
 
@@ -216,6 +223,27 @@ async function addMustChange(pool) {
   )
   if (!rows.length)
     await pool.query('ALTER TABLE usuario ADD COLUMN must_change TINYINT UNSIGNED NOT NULL DEFAULT 0')
+}
+
+/* «MI PERFIL»: nombre, segundo nombre, apellido, WhatsApp y ciudad, todos opcionales.
+   Lo pidió Angel el 2026-09-30: con sólo un mail no hay forma de saber quién es quién ni
+   de contactar a nadie. Columnas de `usuario` y no una tabla aparte: son cinco datos de
+   uno a uno con la cuenta, y así se borran solos con ella. NULL es «no lo cargó». Una
+   por una y preguntando, para que correr esto dos veces —o en una base que ya tiene
+   algunas— no rompa. */
+const PROFILE_COLUMNS = [
+  ['first_name', 'VARCHAR(60) NULL'], ['middle_name', 'VARCHAR(60) NULL'],
+  ['last_name', 'VARCHAR(60) NULL'], ['whatsapp', 'VARCHAR(30) NULL'], ['city', 'VARCHAR(80) NULL'],
+]
+async function addProfileColumns(pool) {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME name FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario'`
+  )
+  const existing = new Set(rows.map((r) => r.name))
+  for (const [name, type] of PROFILE_COLUMNS) {
+    if (!existing.has(name)) await pool.query(`ALTER TABLE usuario ADD COLUMN ${name} ${type}`)
+  }
 }
 
 async function columnaApp(pool) {

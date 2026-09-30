@@ -8,8 +8,9 @@ import { conectar, conectarSalud, prepararEsquema, borrarVencidas } from './base
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
   usuarioDeToken, revisarCredenciales, revisarClave, tokenDe, gastarComoSiExistiera,
-  cambiarClave, cerrarLasDemas,
+  cambiarClave, cerrarLasDemas, resetPassword,
 } from './auth.js'
+import { validateProfile, readProfile, saveProfile } from './profile.js'
 import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveValida } from './coleccion.js'
 import { anotarVisita, resumen, leerColecciones, salud, hoyAca } from './estadisticas.js'
 import { recordPulse, recordVisit } from './pulse.js'
@@ -177,7 +178,9 @@ export function crearApp(pool, poolSalud = pool) {
        día ANTES de calcular nada, así que "la usaron hoy" y tu propia retención se
        inflaban con tus propios chequeos. Con 28 cuentas, mirar el panel todos los días
        era una parte medible del número que el panel existe para mostrar. */
-    if (pedido.routeOptions?.url !== '/api/admin/resumen')
+    /* Por PREFIJO y no por ruta exacta desde que hay más de una de admin: generar una
+       clave provisoria tampoco es usar la app. */
+    if (!pedido.routeOptions?.url?.startsWith('/api/admin/'))
       anotarVisita(pool, usuario.id, pedido.query?.app === '1') // una vez por día, sin esperarla
   }
 
@@ -348,10 +351,51 @@ export function crearApp(pool, poolSalud = pool) {
     }
   })
 
-  /* --- Estadísticas, sólo para el admin ------------------------------------------ */
+  /* --- Mi perfil, para todos ------------------------------------------------------ */
+  /* Como todo lo de la cuenta, el id sale del TOKEN y nunca de la URL ni del cuerpo: no
+     hay forma de leer ni escribir el perfil de otro. Nada es obligatorio; PUT reemplaza el
+     perfil entero y contesta con cómo quedó. */
+  app.get('/api/profile', { preHandler: conSesion }, async (pedido) =>
+    readProfile(pool, pedido.usuario.id))
+
+  app.put('/api/profile', { preHandler: conSesion }, async (pedido, respuesta) => {
+    const { data, error } = validateProfile(pedido.body)
+    if (error) return respuesta.code(400).send({ error })
+    await saveProfile(pool, pedido.usuario.id, data)
+    return readProfile(pool, pedido.usuario.id)
+  })
+
+  /* --- Sólo para el admin: las estadísticas y la clave provisoria ------------------ */
+  /* LA CLAVE PROVISORIA, DESDE EL PANEL. Lo mismo que `bin/reset-password.js` pero con un
+     botón en la lista de usuarios, que es lo que pidió Angel. A quien no es admin,
+     `callNotFound`: el MISMO 404 que una dirección inexistente. La ruta igual es pública
+     (viaja en el bundle); lo que la protege es `esAdmin`, no esconderla. Deja rastro en el
+     log —quién la generó y para quién, nunca la clave— porque es una acción sobre la
+     cuenta de otra persona.
+
+     UNA CUENTA DE ADMIN NO SE RESETEA DESDE ACÁ, y lo encontró la revisión adversarial del
+     2026-09-30: con un token de admin robado —dura 30 días— alcanzaba un pedido para
+     resetear la cuenta del propio admin, entrar con la provisoria, cambiarla, y echar al
+     dueño de todas sus sesiones (lo probó contra la base de prueba). Antes de esta ruta,
+     un token robado sólo leía el panel. Las cuentas de admin van por el script, que pide
+     SSH. */
+  app.post('/api/admin/reset-password', { preHandler: conSesion }, async (pedido, respuesta) => {
+    if (!esAdmin(pedido.usuario.usuario)) return respuesta.callNotFound()
+    const { usuario } = pedido.body ?? {}
+    if (typeof usuario !== 'string' || !usuario) return respuesta.code(400).send({ error: 'Falta la cuenta.' })
+    const [rows] = await pool.query('SELECT id, usuario FROM usuario WHERE usuario = ?', [usuario])
+    if (!rows.length) return respuesta.code(404).send({ error: 'No existe esa cuenta.' })
+    if (esAdmin(rows[0].usuario))
+      return respuesta.code(400).send({ error: 'Una cuenta de admin se resetea desde el servidor, con bin/reset-password.js.' })
+    const temp = await resetPassword(pool, rows[0].id)
+    pedido.log.info({ by: pedido.usuario.usuario, target: rows[0].usuario }, 'clave provisoria generada')
+    return { usuario: rows[0].usuario, temp }
+  })
+
   app.get('/api/admin/resumen', { preHandler: conSesion }, async (pedido, respuesta) => {
-    // 404 y no 403: a quien no es admin no se le confirma que esto existe.
-    if (!esAdmin(pedido.usuario.usuario)) return respuesta.code(404).send({ error: 'No existe.' })
+    /* 404 y no 403 — y el MISMO 404 que una dirección inexistente (`callNotFound`): con un
+       cuerpo propio, «No existe.» contra «Esa dirección no existe.», se distinguía igual. */
+    if (!esAdmin(pedido.usuario.usuario)) return respuesta.callNotFound()
     /* El front manda qué prefijos son de cada colección. Si no manda nada —o manda
        cualquier cosa— el panel contesta igual, sin partir por colección. */
     return resumen(pool, leerColecciones(pedido.query?.cols))

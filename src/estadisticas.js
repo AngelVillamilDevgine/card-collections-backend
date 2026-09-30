@@ -12,6 +12,7 @@
 const aca = (col) => `CONVERT_TZ(${col}, '+00:00', '-03:00')`
 
 import { funnelSummary } from './pulse.js'
+import { toProfile } from './profile.js'
 
 /* Cuánta gente entra en la tabla de «uno por uno». No es por el motor —se midió, y lo
    que cuesta es recorrer `carta`, que hay que recorrer igual— sino por lo que viaja:
@@ -463,7 +464,8 @@ export async function resumen(pool, colecciones = null) {
             COALESCE(k.repetidas, 0) repetidas,
             DATE_FORMAT(v.ultima, '%Y-%m-%d') ultima,
             COALESCE(v.dias, 0) dias,
-            COALESCE(v.app, 0) app
+            COALESCE(v.app, 0) app,
+            u.must_change, u.first_name, u.middle_name, u.last_name, u.whatsapp, u.city
        FROM usuario u
        LEFT JOIN (SELECT usuario_id, COUNT(*) cartas, COALESCE(SUM(cantidad - 1), 0) repetidas
                     FROM carta GROUP BY usuario_id) k ON k.usuario_id = u.id
@@ -538,6 +540,10 @@ export async function resumen(pool, colecciones = null) {
       dias: Number(f.dias),
       app: Number(f.app) === 1,
       porColeccion: porPersona?.get(f.id) ?? null,
+      /* Lo que la ficha del usuario muestra en el panel: su perfil, si lo cargó, y si
+         tiene una clave provisoria que todavía no cambió. Mismo formato que /api/profile. */
+      profile: toProfile(f),
+      mustChange: Number(f.must_change) === 1,
     })),
   }
 }
