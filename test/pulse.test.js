@@ -207,10 +207,10 @@ test('un robot no deja NADA: ni carga ni visitante', async () => {
 })
 
 test('un aparato sin identificar deja su UA en el log, no en la base', async () => {
-  const anotado = []
-  const log = { info: (obj, msg) => anotado.push({ ...obj, msg }) }
+  const logged = []
+  const log = { info: (obj, msg) => logged.push({ ...obj, msg }) }
   await recordVisit(pool, `v1|${VID}|0|0`, hoyAca(), 'RaroBrowser/1.0', log)
-  assert.deepEqual(anotado, [{ ua: 'RaroBrowser/1.0', msg: 'aparato sin identificar' }])
+  assert.deepEqual(logged, [{ ua: 'RaroBrowser/1.0', msg: 'aparato sin identificar' }])
   const [[v]] = await pool.query('SELECT device FROM visitor WHERE vid = ?', [VID])
   assert.equal(v.device, 'otro')
 })

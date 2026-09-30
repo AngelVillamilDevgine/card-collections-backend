@@ -282,14 +282,14 @@ const S = (d) => d.toISOString().slice(0, 10)
 const addDays = (s, n) => { const d = D(s); d.setUTCDate(d.getUTCDate() + n); return S(d) }
 const monthStart = (s) => s.slice(0, 8) + '01'
 
-export function periodRanges(hoy) {
-  const thisMonthStart = monthStart(hoy)
+export function periodRanges(today) {
+  const thisMonthStart = monthStart(today)
   const prevMonthEnd = addDays(thisMonthStart, -1)
   const prevMonthStart = monthStart(prevMonthEnd)
   return {
-    hoy: { desde: hoy, hasta: hoy },
-    semana: { desde: addDays(hoy, -6), hasta: hoy },
-    mes: { desde: thisMonthStart, hasta: hoy },
+    hoy: { desde: today, hasta: today },
+    semana: { desde: addDays(today, -6), hasta: today },
+    mes: { desde: thisMonthStart, hasta: today },
     mesPasado: { desde: prevMonthStart, hasta: prevMonthEnd },
   }
 }
@@ -297,11 +297,11 @@ export function periodRanges(hoy) {
 /* El paquete de un rango: todo lo que el panel muestra filtrado. `moved` usa
    `carta.marked_at`, que las filas anteriores a su migración tienen en NULL — esas
    quedan afuera de todos los rangos por igual, que es lo honesto que se puede. */
-async function rangePack(pool, desde, hasta) {
-  const [visitors, visitorsNew, signups, [[uso]], [pulsos], [moved], [devices]] = await Promise.all([
-    una(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [desde, hasta]),
-    una(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [desde, hasta]),
-    una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) BETWEEN ? AND ?`, [desde, hasta]),
+async function rangePack(pool, from, to) {
+  const [visitors, visitorsNew, signups, [[usage]], [pulses], [moved], [devices]] = await Promise.all([
+    una(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [from, to]),
+    una(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [from, to]),
+    una(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${aca('creado')}) BETWEEN ? AND ?`, [from, to]),
     /* El uso, partido por la bandera del día: `app=1` es «ese día entró como app
        instalada al menos una vez». Web y app pueden SOLAPARSE (lunes navegador, martes
        app), así que las dos no tienen por qué sumar el total — el total sigue en
@@ -310,32 +310,32 @@ async function rangePack(pool, desde, hasta) {
     pool.query(
       `SELECT COUNT(DISTINCT usuario_id) total,
               COUNT(DISTINCT CASE WHEN app = 0 THEN usuario_id END) web,
-              COUNT(DISTINCT CASE WHEN app = 1 THEN usuario_id END) instalada
+              COUNT(DISTINCT CASE WHEN app = 1 THEN usuario_id END) installed
          FROM visita WHERE dia BETWEEN ? AND ?`,
-      [desde, hasta]
+      [from, to]
     ),
-    pool.query('SELECT k, SUM(n) n FROM pulse WHERE day BETWEEN ? AND ? GROUP BY k', [desde, hasta]),
+    pool.query('SELECT k, SUM(n) n FROM pulse WHERE day BETWEEN ? AND ? GROUP BY k', [from, to]),
     pool.query(
       `SELECT COUNT(DISTINCT usuario_id) gente, COUNT(*) cartas FROM carta
         WHERE marked_at IS NOT NULL AND DATE(${aca('marked_at')}) BETWEEN ? AND ?`,
-      [desde, hasta]
+      [from, to]
     ),
     pool.query(
       `SELECT v.device, COUNT(DISTINCT vd.vid) n
          FROM visitor_day vd JOIN visitor v ON v.vid = vd.vid
         WHERE vd.day BETWEEN ? AND ? GROUP BY v.device ORDER BY n DESC`,
-      [desde, hasta]
+      [from, to]
     ),
   ])
   const byKey = {}
-  for (const f of pulsos) byKey[f.k] = Number(f.n)
+  for (const f of pulses) byKey[f.k] = Number(f.n)
   const sum = (...ks) => ks.reduce((a, k) => a + (byKey[k] ?? 0), 0)
   return {
-    desde, hasta,
+    desde: from, hasta: to,
     visitors, visitorsNew, signups,
-    usedApp: Number(uso.total),
-    usedWeb: Number(uso.web),
-    usedInstalled: Number(uso.instalada),
+    usedApp: Number(usage.total),
+    usedWeb: Number(usage.web),
+    usedInstalled: Number(usage.installed),
     landing: byKey.landing ?? 0,
     toSignup: sum('login:hero', 'login:closing'),
     toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
@@ -344,8 +344,8 @@ async function rangePack(pool, desde, hasta) {
   }
 }
 
-export async function periodSummaries(pool, hoy) {
-  const ranges = periodRanges(hoy)
+export async function periodSummaries(pool, today) {
+  const ranges = periodRanges(today)
   const out = {}
   for (const [name, r] of Object.entries(ranges)) {
     out[name] = await rangePack(pool, r.desde, r.hasta)

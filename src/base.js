@@ -210,11 +210,11 @@ export async function prepararEsquema(pool) {
    Migración aparte y no sólo en el CREATE, por lo de siempre: CREATE TABLE IF NOT EXISTS
    no toca una tabla que ya está. */
 async function addMustChange(pool) {
-  const [filas] = await pool.query(
+  const [rows] = await pool.query(
     `SELECT 1 FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'must_change'`
   )
-  if (!filas.length)
+  if (!rows.length)
     await pool.query('ALTER TABLE usuario ADD COLUMN must_change TINYINT UNSIGNED NOT NULL DEFAULT 0')
 }
 

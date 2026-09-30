@@ -100,12 +100,12 @@ export async function cambiarClave(pool, usuarioId, actual, nueva) {
    otro aparato —: se cierran solas cuando elija la nueva, que es lo que ya hace
    `/api/clave`. Devuelve la provisoria para dársela a la persona. */
 export async function resetPassword(pool, usuarioId) {
-  const temporal = String(crypto.randomInt(0, 100_000_000)).padStart(8, '0')
+  const temp = String(crypto.randomInt(0, 100_000_000)).padStart(8, '0')
   await pool.query(
     'UPDATE usuario SET hash = ?, must_change = 1 WHERE id = ?',
-    [await hashearClave(temporal), usuarioId]
+    [await hashearClave(temp), usuarioId]
   )
-  return temporal
+  return temp
 }
 
 export async function usuarioDeToken(pool, token) {

@@ -14,8 +14,8 @@
 import { conectar, prepararEsquema } from '../src/base.js'
 import { resetPassword } from '../src/auth.js'
 
-const [usuario] = process.argv.slice(2)
-if (!usuario) {
+const [username] = process.argv.slice(2)
+if (!username) {
   console.error('uso: node bin/reset-password.js <usuario>')
   process.exit(1)
 }
@@ -23,15 +23,15 @@ if (!usuario) {
 const pool = conectar()
 await prepararEsquema(pool)
 
-const [filas] = await pool.query('SELECT id, usuario FROM usuario WHERE usuario = ?', [usuario])
-if (!filas.length) {
-  console.error(`No existe el usuario "${usuario}". No se tocó nada.`)
+const [rows] = await pool.query('SELECT id, usuario FROM usuario WHERE usuario = ?', [username])
+if (!rows.length) {
+  console.error(`No existe el usuario "${username}". No se tocó nada.`)
   await pool.end()
   process.exit(1)
 }
 
-const temporal = await resetPassword(pool, filas[0].id)
+const temp = await resetPassword(pool, rows[0].id)
 await pool.end()
-console.log(`Listo: ${filas[0].usuario}`)
-console.log(`Clave provisoria: ${temporal}`)
+console.log(`Listo: ${rows[0].usuario}`)
+console.log(`Clave provisoria: ${temp}`)
 console.log('Al entrar, la app le va a pedir que elija una nueva antes de seguir.')

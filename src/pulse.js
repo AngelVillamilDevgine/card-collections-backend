@@ -140,15 +140,15 @@ export async function funnelSummary(pool, today) {
   /* Las PERSONAS, aparte de las cargas. Totales del resumen por navegador, únicos de
      hoy y por día de `visitor_day`, y el reparto por aparato. Todo junto y con Number()
      porque los SUM() vuelven como texto. */
-  const [[uni]] = await pool.query(
-    `SELECT COUNT(*) total, COALESCE(SUM(with_session), 0) conCuenta,
-            COALESCE(SUM(standalone), 0) desdeApp, COALESCE(SUM(visits), 0) cargas
+  const [[unique]] = await pool.query(
+    `SELECT COUNT(*) total, COALESCE(SUM(with_session), 0) withSession,
+            COALESCE(SUM(standalone), 0) fromApp, COALESCE(SUM(visits), 0) loads
        FROM visitor`
   )
-  const [[uniHoy]] = await pool.query(
+  const [[uniqueToday]] = await pool.query(
     'SELECT COUNT(*) n FROM visitor_day WHERE day = ?', [today]
   )
-  const [uniDays] = await pool.query(
+  const [uniqueDays] = await pool.query(
     `SELECT DATE_FORMAT(day, '%Y-%m-%d') dia, COUNT(*) n FROM visitor_day
       WHERE day > DATE_SUB(?, INTERVAL 62 DAY) GROUP BY day ORDER BY day`,
     [today]
@@ -166,11 +166,11 @@ export async function funnelSummary(pool, today) {
     toSignup: sum('login:hero', 'login:closing'),
     toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
     visitors: {
-      total: Number(uni.total),
-      today: Number(uniHoy.n),
-      withSession: Number(uni.conCuenta),
-      standalone: Number(uni.desdeApp),
-      days: uniDays.map((f) => ({ dia: f.dia, n: Number(f.n) })),
+      total: Number(unique.total),
+      today: Number(uniqueToday.n),
+      withSession: Number(unique.withSession),
+      standalone: Number(unique.fromApp),
+      days: uniqueDays.map((f) => ({ dia: f.dia, n: Number(f.n) })),
       devices: devices.map((f) => ({ device: f.device, n: Number(f.n) })),
     },
   }
