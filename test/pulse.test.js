@@ -178,6 +178,43 @@ test('el aparato sale del User-Agent, grueso a propósito', () => {
   assert.equal(deviceOf(undefined), 'otro')
 })
 
+test('lo que antes caía en «otro» ahora tiene nombre, y el orden importa', () => {
+  // Linux de escritorio (Huayra y compañía) y ChromeOS, que dice «X11» también.
+  assert.equal(deviceOf('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'), 'linux')
+  assert.equal(deviceOf('Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 Chrome/130'), 'chromeos')
+  // La Xbox dice «Windows» y los televisores «Linux»: van antes.
+  assert.equal(deviceOf('Mozilla/5.0 (Windows NT 10.0; Win64; x64; Xbox; Xbox One) Edge/44'), 'consola')
+  assert.equal(deviceOf('Mozilla/5.0 (PlayStation; PlayStation 5/2.26) AppleWebKit/605.1.15'), 'consola')
+  assert.equal(deviceOf('Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/537.36 SamsungBrowser/4.0'), 'tv')
+  assert.equal(deviceOf('Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 Chrome/87'), 'tv')
+})
+
+test('los robots no son personas — y Googlebot móvil dice «Android»', () => {
+  assert.equal(deviceOf('Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'), 'bot')
+  assert.equal(deviceOf('Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Googlebot/2.1; +http://www.google.com/bot.html) Chrome/130 Safari/537.36'), 'bot')
+  assert.equal(deviceOf('Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)'), 'bot')
+  assert.equal(deviceOf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 HeadlessChrome/153.0.0.0 Safari/537.36'), 'bot')
+  // Y un celular CUBOT es un Android de verdad: `bot` va con bordes de palabra.
+  assert.equal(deviceOf('Mozilla/5.0 (Linux; Android 12; CUBOT X50) AppleWebKit/537.36 Chrome/130 Mobile'), 'android')
+})
+
+test('un robot no deja NADA: ni carga ni visitante', async () => {
+  const googlebot = 'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X) Chrome/130 Mobile (compatible; Googlebot/2.1)'
+  await recordVisit(pool, `v1|${VID}|0|0`, hoyAca(), googlebot)
+  assert.equal((await filas()).length, 0)
+  const [[v]] = await pool.query('SELECT COUNT(*) n FROM visitor')
+  assert.equal(Number(v.n), 0)
+})
+
+test('un aparato sin identificar deja su UA en el log, no en la base', async () => {
+  const anotado = []
+  const log = { info: (obj, msg) => anotado.push({ ...obj, msg }) }
+  await recordVisit(pool, `v1|${VID}|0|0`, hoyAca(), 'RaroBrowser/1.0', log)
+  assert.deepEqual(anotado, [{ ua: 'RaroBrowser/1.0', msg: 'aparato sin identificar' }])
+  const [[v]] = await pool.query('SELECT device FROM visitor WHERE vid = ?', [VID])
+  assert.equal(v.device, 'otro')
+})
+
 test('POST /api/pulse con v1 anota al visitante con su aparato', async () => {
   const r = await app.inject({
     method: 'POST',

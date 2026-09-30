@@ -39,19 +39,46 @@ export const PULSE_KEYS = new Set([
    y no se guarda el UA crudo, que es una huella. */
 const VID = /^[a-f0-9]{16}$/
 
+/* LOS ROBOTS NO SON PERSONAS. Googlebot y Bingbot ejecutan JavaScript, así que corren
+   `resume.js` y mandan el beacon como cualquiera — y Googlebot en versión teléfono dice
+   «Android» en su UA: sin esto contaba como un visitante de Android. Van antes que
+   cualquier clasificación. `\bbot\b` con bordes y no `bot` a secas: el celular «CUBOT»
+   es un Android de verdad. HeadlessChrome y Lighthouse son automatizaciones (entre ellas,
+   las pruebas contra producción de este mismo proyecto). */
+const BOT = /\b(bot|crawler|spider)\b|googlebot|bingbot|yandex|baiduspider|duckduckbot|slurp|applebot|petalbot|bytespider|ahrefs|semrush|facebookexternalhit|headlesschrome|lighthouse/i
+
+/* EL ORDEN IMPORTA: la Xbox dice «Windows» y los televisores dicen «Linux», así que
+   consolas y TV van antes; ChromeOS dice «X11; CrOS», antes que Linux. Hasta el
+   2026-09-30 esto sabía cinco nombres y lo demás caía en «otro»: tres de los primeros
+   trece visitantes, que no hubo forma de identificar después porque el UA crudo no se
+   guarda (ni acá, ni en el log de Traefik, que no conserva cabeceras). Lo pidió Angel:
+   «quiero que descubras qué dispositivo es». */
 export function deviceOf(ua = '') {
-  if (/iPhone/.test(ua)) return 'iphone'
+  if (BOT.test(ua)) return 'bot'
+  if (/Xbox|PlayStation|Nintendo/i.test(ua)) return 'consola'
+  if (/SMART-?TV|Tizen|Web0S|webOS|NetCast|BRAVIA|HbbTV|CrKey|AppleTV|AFT[A-Z]/i.test(ua)) return 'tv'
+  if (/iPhone|iPod/.test(ua)) return 'iphone'
   if (/iPad/.test(ua)) return 'ipad'
   if (/Android/.test(ua)) return 'android'
+  if (/CrOS/.test(ua)) return 'chromeos'
   if (/Windows/.test(ua)) return 'windows'
   if (/Macintosh/.test(ua)) return 'mac'
+  if (/Linux|X11/.test(ua)) return 'linux'
   return 'otro'
 }
 
 /* Cada carga de la landing es UNA visita cruda (el contador `landing` de siempre) y,
    si el vid tiene forma, un upsert del visitante y su presencia del día. Un vid
-   inventado que no sea 16 hex sólo cuenta la visita cruda. */
-export function recordVisit(pool, raw, day, ua) {
+   inventado que no sea 16 hex sólo cuenta la visita cruda.
+
+   Un ROBOT no deja nada: ni carga, ni visitante — el panel cuenta personas. Y un aparato
+   que ni con la lista ampliada se reconoce deja su UA EN EL LOG de la API (no en la
+   base, que sigue sin guardarlo): así la próxima vez hay con qué identificarlo —
+   `docker service logs dbz-api_api 2>&1 | grep 'aparato sin identificar'`. */
+export function recordVisit(pool, raw, day, ua, log) {
+  const device = deviceOf(ua)
+  if (device === 'bot') return Promise.resolve()
+  if (device === 'otro') log?.info?.({ ua: String(ua ?? '').slice(0, 300) }, 'aparato sin identificar')
   const [, vid = '', session = '0', standalone = '0'] = String(raw).split('|')
   const jobs = [recordPulse(pool, 'landing', day)]
   if (VID.test(vid)) {
@@ -66,7 +93,7 @@ export function recordVisit(pool, raw, day, ua) {
                with_session = GREATEST(with_session, VALUES(with_session)),
                standalone = GREATEST(standalone, VALUES(standalone)),
                device = VALUES(device)`,
-          [vid, day, day, session === '1' ? 1 : 0, standalone === '1' ? 1 : 0, deviceOf(ua)]
+          [vid, day, day, session === '1' ? 1 : 0, standalone === '1' ? 1 : 0, device]
         )
         .catch(() => {}),
       pool.query('INSERT IGNORE INTO visitor_day (day, vid) VALUES (?, ?)', [day, vid]).catch(() => {})

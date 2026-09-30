@@ -415,7 +415,7 @@ export function crearApp(pool, poolSalud = pool) {
     const body = typeof pedido.body === 'string' ? pedido.body.trim() : ''
     /* `v1|…` es la visita a la landing con su visitante único; lo demás, los contadores
        de siempre. El User-Agent se clasifica en el servidor y no se guarda crudo. */
-    if (body.startsWith('v1|')) recordVisit(pool, body, hoyAca(), pedido.headers['user-agent'])
+    if (body.startsWith('v1|')) recordVisit(pool, body, hoyAca(), pedido.headers['user-agent'], pedido.log)
     else recordPulse(pool, body, hoyAca())
     return respuesta.code(204).send()
   })
