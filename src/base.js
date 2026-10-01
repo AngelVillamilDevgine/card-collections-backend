@@ -25,7 +25,9 @@ const TABLAS = [
      -- E.164 sin el «+», sólo dígitos. Ver normalizeWhatsapp() en profile.js y, por el
      -- comentario, normalizeWhatsappColumn().
      whatsapp    VARCHAR(30)  NULL COMMENT 'e164',
-     city        VARCHAR(80)  NULL,
+     -- Una de las 24 de PROVINCES (profile.js). Hasta el 2026-09-30 fue city, texto libre:
+     -- esa columna sigue existiendo en las bases viejas, vacía y sin uso. Ver addProfileColumns().
+     province    VARCHAR(40)  NULL,
      UNIQUE KEY usuario_unico (usuario)
    ) ${COLACION}`,
 
@@ -272,15 +274,21 @@ async function addMustChange(pool) {
     await pool.query('ALTER TABLE usuario ADD COLUMN must_change TINYINT UNSIGNED NOT NULL DEFAULT 0')
 }
 
-/* «MI PERFIL»: nombre, segundo nombre, apellido, WhatsApp y ciudad, todos opcionales.
+/* «MI PERFIL»: nombre, segundo nombre, apellido, WhatsApp y provincia, todos opcionales.
    Lo pidió Angel el 2026-09-30: con sólo un mail no hay forma de saber quién es quién ni
    de contactar a nadie. Columnas de `usuario` y no una tabla aparte: son cinco datos de
    uno a uno con la cuenta, y así se borran solos con ella. NULL es «no lo cargó». Una
    por una y preguntando, para que correr esto dos veces —o en una base que ya tiene
-   algunas— no rompa. */
+   algunas— no rompa.
+
+   LA PROVINCIA ES COLUMNA NUEVA Y NO UN RENOMBRE DE `city`, que es lo que fue ese mismo
+   día. Renombrarla rompía a la versión vieja, que convive con la nueva durante el deploy
+   (start-first) y vuelve si el swarm hace rollback: sus SELECT y UPDATE nombran `city`.
+   `city` queda en las bases viejas, vacía —en producción no tenía ni un valor— y sin uso;
+   borrarla es un paso aparte, cuando la imagen vieja ya no pueda volver. */
 const PROFILE_COLUMNS = [
   ['first_name', 'VARCHAR(60) NULL'], ['middle_name', 'VARCHAR(60) NULL'],
-  ['last_name', 'VARCHAR(60) NULL'], ['whatsapp', "VARCHAR(30) NULL COMMENT 'e164'"], ['city', 'VARCHAR(80) NULL'],
+  ['last_name', 'VARCHAR(60) NULL'], ['whatsapp', "VARCHAR(30) NULL COMMENT 'e164'"], ['province', 'VARCHAR(40) NULL'],
 ]
 async function addProfileColumns(pool) {
   const [rows] = await pool.query(

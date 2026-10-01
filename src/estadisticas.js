@@ -465,7 +465,7 @@ export async function resumen(pool, colecciones = null) {
             DATE_FORMAT(v.ultima, '%Y-%m-%d') ultima,
             COALESCE(v.dias, 0) dias,
             COALESCE(v.app, 0) app,
-            u.must_change, u.first_name, u.middle_name, u.last_name, u.whatsapp, u.city
+            u.must_change, u.first_name, u.middle_name, u.last_name, u.whatsapp, u.province
        FROM usuario u
        LEFT JOIN (SELECT usuario_id, COUNT(*) cartas, COALESCE(SUM(cantidad - 1), 0) repetidas
                     FROM carta GROUP BY usuario_id) k ON k.usuario_id = u.id

@@ -6,7 +6,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { conectar, prepararEsquema } from '../src/base.js'
-import { validateProfile, normalizeWhatsapp } from '../src/profile.js'
+import { validateProfile, normalizeWhatsapp, PROVINCES } from '../src/profile.js'
 import { olvidarVisitas, resumen } from '../src/estadisticas.js'
 
 const URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
@@ -45,7 +45,7 @@ const register = async (user) => {
   assert.equal(r.statusCode, 200, r.body)
   return r.json().token
 }
-const FULL = { firstName: 'Gabriel', middleName: 'Omar', lastName: 'Rivarola', whatsapp: '+54 9 351 671-0050', city: 'Córdoba' }
+const FULL = { firstName: 'Gabriel', middleName: 'Omar', lastName: 'Rivarola', whatsapp: '+54 9 351 671-0050', province: 'Córdoba' }
 /* Lo que vuelve: el WhatsApp en E.164 sin «+», sólo dígitos. */
 const STORED = { ...FULL, whatsapp: '5493516710050' }
 
@@ -54,19 +54,19 @@ const STORED = { ...FULL, whatsapp: '5493516710050' }
 test('todo vacío es un perfil válido: nada es obligatorio', () => {
   const { data, error } = validateProfile({})
   assert.equal(error, undefined)
-  assert.deepEqual(data, { first_name: null, middle_name: null, last_name: null, whatsapp: null, city: null })
+  assert.deepEqual(data, { first_name: null, middle_name: null, last_name: null, whatsapp: null, province: null })
 })
 
 test('recorta, junta espacios repetidos, y un campo en blanco es NULL', () => {
-  const { data } = validateProfile({ firstName: '  Juan   Pablo ', city: '   ' })
+  const { data } = validateProfile({ firstName: '  Juan   Pablo ', province: '   ' })
   assert.equal(data.first_name, 'Juan Pablo')
-  assert.equal(data.city, null)
+  assert.equal(data.province, null)
 })
 
 test('frena lo que no es un dato', () => {
   assert.match(validateProfile({ firstName: 'x'.repeat(61) }).error, /hasta 60/)
   assert.match(validateProfile({ lastName: 42 }).error, /texto/)
-  assert.match(validateProfile({ city: 'Córdoba\u0000' }).error, /caracteres/)
+  assert.match(validateProfile({ lastName: 'Rivarola\u0000' }).error, /caracteres/)
   assert.match(validateProfile(null).error, /Faltan/)
   assert.match(validateProfile([]).error, /Faltan/)
 })
@@ -176,7 +176,7 @@ test('un perfil nuevo viene vacío, con el mail de la cuenta', async () => {
   const token = await register(ANA)
   const r = await app.inject({ method: 'GET', url: '/api/profile', headers: auth(token) })
   assert.equal(r.statusCode, 200)
-  assert.deepEqual(r.json(), { usuario: ANA, firstName: '', middleName: '', lastName: '', whatsapp: '', city: '' })
+  assert.deepEqual(r.json(), { usuario: ANA, firstName: '', middleName: '', lastName: '', whatsapp: '', province: '' })
 })
 
 test('guardar y volver a leer', async () => {
@@ -201,7 +201,7 @@ test('LA IMPORTANTE: el perfil de uno no toca ni muestra el de otro', async () =
   const beto = await register(BETO)
   await app.inject({ method: 'PUT', url: '/api/profile', headers: auth(ana), payload: FULL })
   const betoReads = await app.inject({ method: 'GET', url: '/api/profile', headers: auth(beto) })
-  assert.deepEqual(betoReads.json(), { usuario: BETO, firstName: '', middleName: '', lastName: '', whatsapp: '', city: '' })
+  assert.deepEqual(betoReads.json(), { usuario: BETO, firstName: '', middleName: '', lastName: '', whatsapp: '', province: '' })
   /* Y aunque el cuerpo traiga un `usuario` ajeno, se escribe el del token. */
   await app.inject({ method: 'PUT', url: '/api/profile', headers: auth(beto), payload: { ...FULL, firstName: 'Beto', usuario: ANA } })
   const anaReads = await app.inject({ method: 'GET', url: '/api/profile', headers: auth(ana) })
@@ -270,4 +270,34 @@ test('la lista del panel trae el perfil y la marca de provisoria de cada uno', a
   const row = d.gente.find((g) => g.usuario === ANA)
   assert.deepEqual(row.profile, STORED)
   assert.equal(row.mustChange, false)
+})
+
+// ------------------------------------------------------------ la provincia
+
+/* LA MISMA LISTA, literal, está en el provinces.test.js del front. */
+const THE_24 = [
+  'Buenos Aires', 'Catamarca', 'Chaco', 'Chubut', 'Ciudad Autónoma de Buenos Aires', 'Córdoba',
+  'Corrientes', 'Entre Ríos', 'Formosa', 'Jujuy', 'La Pampa', 'La Rioja', 'Mendoza', 'Misiones',
+  'Neuquén', 'Río Negro', 'Salta', 'San Juan', 'San Luis', 'Santa Cruz', 'Santa Fe',
+  'Santiago del Estero', 'Tierra del Fuego', 'Tucumán',
+]
+
+test('son las 24 jurisdicciones, y ninguna más', () => {
+  assert.deepEqual(PROVINCES, THE_24)
+})
+
+test('la provincia tiene que ser una de la lista: una ciudad no pasa', () => {
+  for (const p of THE_24) assert.equal(validateProfile({ province: p }).data.province, p)
+  assert.equal(validateProfile({ province: 'cordoba' }).data.province, 'Córdoba') // sin tilde: es la misma
+  assert.equal(validateProfile({ province: '  RÍO   NEGRO ' }).data.province, 'Río Negro')
+  assert.equal(validateProfile({ province: '' }).data.province, null)
+  assert.match(validateProfile({ province: 'Río Cuarto' }).error, /provincia de la lista/)
+  assert.match(validateProfile({ province: 'Capital' }).error, /provincia de la lista/)
+})
+
+test('un front viejo que todavía manda «city» no rompe nada: se ignora', () => {
+  const { data, error } = validateProfile({ firstName: 'Ana', city: 'Rosario' })
+  assert.equal(error, undefined)
+  assert.equal(data.province, null)
+  assert.equal('city' in data, false)
 })

@@ -21,8 +21,27 @@ const FIELDS = {
   middleName: { column: 'middle_name', max: 60, label: 'El segundo nombre' },
   lastName: { column: 'last_name', max: 60, label: 'El apellido' },
   whatsapp: { column: 'whatsapp', max: 30, label: 'El WhatsApp' },
-  city: { column: 'city', max: 80, label: 'La ciudad' },
+  province: { column: 'province', max: 40, label: 'La provincia' },
 }
+
+/* LAS 24 JURISDICCIONES, con el nombre con que se guardan. Era «Ciudad», texto libre, y el
+   2026-09-30 Angel lo pidió así: «que diga provincia, que sean todas las de Argentina [...]
+   y no pueda enviar una que no sean las que son válidas». Se guarda el nombre y no un
+   código porque se lee en HeidiSQL. Tierra del Fuego va con el nombre que dice la gente,
+   no con el oficial entero («…, Antártida e Islas del Atlántico Sur»).
+
+   ESTA LISTA ESTÁ COPIADA EN `frontend/src/provinces.js` y los tests de los dos lados
+   tienen el mismo literal: si se toca una, se toca la otra. */
+export const PROVINCES = [
+  'Buenos Aires', 'Catamarca', 'Chaco', 'Chubut', 'Ciudad Autónoma de Buenos Aires', 'Córdoba',
+  'Corrientes', 'Entre Ríos', 'Formosa', 'Jujuy', 'La Pampa', 'La Rioja', 'Mendoza', 'Misiones',
+  'Neuquén', 'Río Negro', 'Salta', 'San Juan', 'San Luis', 'Santa Cruz', 'Santa Fe',
+  'Santiago del Estero', 'Tierra del Fuego', 'Tucumán',
+]
+/* Sin tildes ni mayúsculas: «cordoba» es Córdoba. El front manda el nombre exacto; esto es
+   para no rechazar por una tilde lo que sí es una provincia. */
+const fold = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+const BY_FOLDED = new Map(PROVINCES.map((p) => [fold(p), p]))
 
 /* EL WHATSAPP SE GUARDA EN E.164 SIN EL «+», SÓLO DÍGITOS: 5493516710050. Lo pidió Angel
    el 2026-09-30 —«todo el número junto en la base, sólo números»—, y es además la forma
@@ -113,6 +132,12 @@ export function validateProfile(body) {
       data[column] = digits
       continue
     }
+    if (key === 'province' && value) {
+      const province = BY_FOLDED.get(fold(value))
+      if (!province) return { error: 'Elegí la provincia de la lista.' }
+      data[column] = province
+      continue
+    }
     data[column] = value || null
   }
   return { data }
@@ -128,7 +153,7 @@ export function toProfile(row) {
 
 export async function readProfile(pool, userId) {
   const [rows] = await pool.query(
-    'SELECT usuario, first_name, middle_name, last_name, whatsapp, city FROM usuario WHERE id = ?',
+    'SELECT usuario, first_name, middle_name, last_name, whatsapp, province FROM usuario WHERE id = ?',
     [userId]
   )
   return rows.length ? { usuario: rows[0].usuario, ...toProfile(rows[0]) } : null
