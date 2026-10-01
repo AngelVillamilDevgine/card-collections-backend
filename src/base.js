@@ -4,6 +4,7 @@
 // columna usuario_id, que está en la clave primaria.
 import fs from 'node:fs'
 import mysql from 'mysql2/promise'
+import { normalizeWhatsapp } from './profile.js'
 
 // utf8mb4_unicode_ci no distingue mayúsculas, así que "Angel" y "angel" son el mismo
 // usuario y el UNIQUE de abajo lo impide sin tener que normalizar nada a mano.
@@ -21,7 +22,9 @@ const TABLAS = [
      first_name  VARCHAR(60)  NULL,
      middle_name VARCHAR(60)  NULL,
      last_name   VARCHAR(60)  NULL,
-     whatsapp    VARCHAR(30)  NULL,
+     -- E.164 sin el «+», sólo dígitos. Ver normalizeWhatsapp() en profile.js y, por el
+     -- comentario, normalizeWhatsappColumn().
+     whatsapp    VARCHAR(30)  NULL COMMENT 'e164',
      city        VARCHAR(80)  NULL,
      UNIQUE KEY usuario_unico (usuario)
    ) ${COLACION}`,
@@ -201,7 +204,51 @@ export async function prepararEsquema(pool) {
   await addMarkedAt(pool)
   await addMustChange(pool)
   await addProfileColumns(pool)
+  await normalizeWhatsappColumn(pool)
   await sembrarVisitas(pool)
+}
+
+/* EL WHATSAPP PASÓ A SÓLO DÍGITOS el 2026-09-30, a horas de haber salido «Mi perfil», y lo
+   que se guardó en esas horas quedó como lo tipeó cada uno. Esto lo lleva a la forma nueva.
+
+   Hay que convertir TODOS los valores una vez, no sólo los que tienen algo que no es un
+   dígito: un «3516710050» tipeado a secas, leído como E.164, es Portugal (+351). La marca
+   de «ya se hizo» es el COMENTARIO de la columna (`e164`), que cambia sin tocar el ancho:
+   achicarla a 15 —lo primero que se probó— rompía a la versión vieja, que durante el deploy
+   convive con la nueva (start-first) y vuelve si el swarm hace rollback, y que guarda con
+   formato hasta 30 caracteres. Con 30 la vieja sigue andando, y lo que escriba con formato
+   lo convierte el próximo arranque: ésos se reconocen solos, porque la forma nueva es sólo
+   dígitos. Lo único que se escapa es un número a secas guardado por la vieja en esos
+   minutos, y se acepta.
+
+   Tres cuidados, los tres de una revisión del mismo día:
+   - Lo que no se puede leer como teléfono queda vacío y se avisa con el valor en el log (y
+     el respaldo de la madrugada lo tiene): recortado a dígitos pasaría por otro país.
+   - Un valor que YA es la forma nueva no se vuelve a leer como si alguien lo hubiera
+     tipeado acá: un 6581234567 de Singapur leído «a la argentina» se perdía. Pasa si un
+     arranque se corta a la mitad y el siguiente repite la vuelta entera.
+   - Se escribe sólo si el valor sigue siendo el que se leyó: si en el medio la versión
+     vieja guardó otro, gana el de la persona y lo convierte el próximo arranque. */
+const WHATSAPP_MARK = 'e164'
+async function normalizeWhatsappColumn(pool) {
+  const [cols] = await pool.query(
+    `SELECT COLUMN_COMMENT note FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'whatsapp'`
+  )
+  if (!cols.length) return
+  const everything = cols[0].note !== WHATSAPP_MARK
+  const [rows] = await pool.query(everything
+    ? 'SELECT id, whatsapp FROM usuario WHERE whatsapp IS NOT NULL'
+    : "SELECT id, whatsapp FROM usuario WHERE whatsapp REGEXP '[^0-9]'")
+  for (const { id, whatsapp } of rows) {
+    let { digits } = normalizeWhatsapp(whatsapp)
+    if (!digits && /^\d+$/.test(whatsapp) && normalizeWhatsapp('+' + whatsapp).digits === whatsapp) digits = whatsapp
+    if (digits === whatsapp) continue
+    if (!digits) console.warn(`whatsapp sin forma de teléfono, se vació: usuario ${id}, valor ${JSON.stringify(whatsapp)}`)
+    await pool.query('UPDATE usuario SET whatsapp = ? WHERE id = ? AND whatsapp = ?', [digits ?? null, id, whatsapp])
+  }
+  if (everything)
+    await pool.query(`ALTER TABLE usuario MODIFY COLUMN whatsapp VARCHAR(30) NULL COMMENT '${WHATSAPP_MARK}'`)
 }
 
 /* `visita` nació sin la columna `app`, y CREATE TABLE IF NOT EXISTS no toca una tabla
@@ -233,7 +280,7 @@ async function addMustChange(pool) {
    algunas— no rompa. */
 const PROFILE_COLUMNS = [
   ['first_name', 'VARCHAR(60) NULL'], ['middle_name', 'VARCHAR(60) NULL'],
-  ['last_name', 'VARCHAR(60) NULL'], ['whatsapp', 'VARCHAR(30) NULL'], ['city', 'VARCHAR(80) NULL'],
+  ['last_name', 'VARCHAR(60) NULL'], ['whatsapp', "VARCHAR(30) NULL COMMENT 'e164'"], ['city', 'VARCHAR(80) NULL'],
 ]
 async function addProfileColumns(pool) {
   const [rows] = await pool.query(
