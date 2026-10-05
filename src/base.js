@@ -28,7 +28,10 @@ const TABLAS = [
      -- Una de las 24 de PROVINCES (profile.js). Hasta el 2026-09-30 fue city, texto libre:
      -- esa columna sigue existiendo en las bases viejas, vacía y sin uso. Ver addProfileColumns().
      province    VARCHAR(40)  NULL,
-     UNIQUE KEY usuario_unico (usuario)
+     -- HMAC de la conexión desde la que se creó (nunca la IP). Ver signup.js y addSignupNet().
+     signup_net  CHAR(64)     NULL,
+     UNIQUE KEY usuario_unico (usuario),
+     KEY alta_por_conexion (signup_net, creado)
    ) ${COLACION}`,
 
   // Se guarda el sha256 del token, no el token: si alguien se lleva la base, no se
@@ -207,7 +210,21 @@ export async function prepararEsquema(pool) {
   await addMustChange(pool)
   await addProfileColumns(pool)
   await normalizeWhatsappColumn(pool)
+  await addSignupNet(pool)
   await sembrarVisitas(pool)
+}
+
+/* De qué conexión salió cada alta, como HMAC (signup.js), para el tope de tres por día.
+   Columna e índice juntos y sólo si faltan: las cuentas de antes quedan en NULL, que no
+   cuenta para nadie. Nullable, para que la versión vieja —que convive con la nueva en el
+   deploy— siga insertando sin nombrarla. */
+async function addSignupNet(pool) {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'signup_net'`
+  )
+  if (!rows.length)
+    await pool.query('ALTER TABLE usuario ADD COLUMN signup_net CHAR(64) NULL, ADD KEY alta_por_conexion (signup_net, creado)')
 }
 
 /* EL WHATSAPP PASÓ A SÓLO DÍGITOS el 2026-09-30, a horas de haber salido «Mi perfil», y lo

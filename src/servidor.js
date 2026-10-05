@@ -4,7 +4,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { conectar, conectarSalud, prepararEsquema, borrarVencidas } from './base.js'
+import { conectar, conectarSalud, prepararEsquema, borrarVencidas, urlDeConexion } from './base.js'
 import {
   hashearClave, claveCoincide, crearSesion, cerrarSesion,
   usuarioDeToken, revisarCredenciales, revisarClave, tokenDe, gastarComoSiExistiera,
@@ -15,6 +15,7 @@ import { leer, guardarCarta, reemplazar, revisarCarta, revisarReemplazo, claveVa
 import { anotarVisita, resumen, leerColecciones, salud, hoyAca } from './estadisticas.js'
 import { recordPulse, recordVisit } from './pulse.js'
 import { createLimiter, WINDOW as VENTANA } from './limiter.js'
+import { looksLikeTestEmail, connectionKey, oneAtATime, SIGNUPS_PER_CONNECTION } from './signup.js'
 
 const PUERTO = Number(process.env.PORT ?? 8787)
 // En Docker hay que escuchar en todas las interfaces o Traefik no llega al contenedor.
@@ -26,6 +27,10 @@ const DIRECCION = process.env.DBZ_DIRECCION ?? '0.0.0.0'
    admin, y así se saca a alguien sin tocar datos. */
 const ADMINS = (process.env.DBZ_ADMINS ?? '')
   .split(',').map((a) => a.trim().toLowerCase()).filter(Boolean)
+
+/* La clave del HMAC de la conexión de cada alta (signup.js): la URL de la base, que es un
+   secret del swarm y no está en ningún otro lado. Sin ella (los tests) vale cualquiera. */
+const SECRETO = urlDeConexion() ?? 'dev'
 
 const ORIGENES = (process.env.DBZ_ORIGENES ?? 'http://localhost:5173')
   .split(',').map((o) => o.trim()).filter(Boolean)
@@ -208,20 +213,36 @@ export function crearApp(pool, poolSalud = pool) {
     const [ya] = await pool.query('SELECT 1 FROM usuario WHERE usuario = ? LIMIT 1', [usuario])
     if (ya.length) return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
 
-    let id
-    try {
-      const [r] = await pool.query(
-        'INSERT INTO usuario (usuario, hash) VALUES (?, ?)',
-        [usuario, await hashearClave(clave)]
+    /* Las cuentas basura (ver signup.js): un mail de prueba no entra, y desde una misma
+       conexión no se crean más de tres por día. Contar e insertar van en fila por
+       conexión, porque juntos en paralelo pasaban todos; y el conteo va antes del scrypt,
+       para no pagarlo cuando ya no hay lugar. */
+    if (looksLikeTestEmail(usuario))
+      return respuesta.code(400).send({ error: 'Ese mail parece de prueba: usá el tuyo de verdad.' })
+    const conexion = connectionKey(ipDe(pedido), SECRETO)
+    const alta = await oneAtATime(conexion, async () => {
+      const [[{ recientes }]] = await pool.query(
+        'SELECT COUNT(*) recientes FROM usuario WHERE signup_net = ? AND creado > NOW() - INTERVAL 1 DAY',
+        [conexion]
       )
-      id = r.insertId
-    } catch (e) {
-      // Dos registros a la vez con el mismo nombre: el UNIQUE de la tabla es el que
-      // decide, no un SELECT previo que puede quedar viejo entre medio.
-      if (e.code === 'ER_DUP_ENTRY')
-        return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
-      throw e
-    }
+      if (recientes >= SIGNUPS_PER_CONNECTION) return { lleno: true }
+      try {
+        const [r] = await pool.query(
+          'INSERT INTO usuario (usuario, hash, signup_net) VALUES (?, ?, ?)',
+          [usuario, await hashearClave(clave), conexion]
+        )
+        return { id: r.insertId }
+      } catch (e) {
+        // Dos registros a la vez con el mismo nombre: el UNIQUE de la tabla es el que
+        // decide, no un SELECT previo que puede quedar viejo entre medio.
+        if (e.code === 'ER_DUP_ENTRY') return { tomado: true }
+        throw e
+      }
+    })
+    if (alta.lleno)
+      return respuesta.code(429).send({ error: 'Desde esta conexión ya se crearon varias cuentas hoy. Probá mañana.' })
+    if (alta.tomado) return respuesta.code(409).send({ error: 'Ese usuario ya está tomado.' })
+    const id = alta.id
 
     anotarVisita(pool, id, pedido.query?.app === '1')
     return { token: await crearSesion(pool, id), usuario, admin: esAdmin(usuario) }

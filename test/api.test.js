@@ -254,7 +254,7 @@ test('/api/salud contesta sin token, para el healthcheck del deploy', async () =
    que ser el mismo número, y esto es lo que lo obliga. */
 test('un mail de 64 entra entero, y uno de 65 se rechaza con el motivo', async () => {
   const cola = '@ejemplo.com'
-  const justo = 'a'.repeat(64 - cola.length) + cola
+  const justo = 'g'.repeat(64 - cola.length) + cola // con «a» sería un mail de prueba (signup.js)
   assert.equal(justo.length, 64)
 
   const r = await pedir({
