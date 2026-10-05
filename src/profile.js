@@ -67,7 +67,9 @@ const BY_FOLDED = new Map(PROVINCES.map((p) => [fold(p), p]))
    siendo los mismos. */
 const LETTERS = /[^\d\s()+.-]/
 const ONLY_DIGITS = 'El WhatsApp va sólo con números.'
-const INCOMPLETE = 'Ese WhatsApp parece incompleto: ponelo con la característica, por ejemplo 351 671-0050.'
+/* Sin un número de ejemplo: el que estaba (351 671-0050) era el de Angel, y lo veía de
+   «ejemplo» cualquiera que dejara el suyo a medias. */
+const INCOMPLETE = 'Ese WhatsApp parece incompleto: ponelo con la característica (11, 351…) y el número.'
 const NOT_A_PHONE = 'Ese WhatsApp no parece un número de teléfono: revisá la característica y el número.'
 
 const lengthError = (number, country) =>
