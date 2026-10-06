@@ -103,15 +103,27 @@ export function recordVisit(pool, raw, day, ua, log) {
 }
 
 /* Sin await en quien llama, igual que `recordUserVisit`: nadie tiene que esperar por una
-   estadística. Devuelve la promesa por si los tests quieren esperarla. */
-export function recordPulse(pool, key, day) {
+   estadística. Devuelve la promesa por si los tests quieren esperarla.
+
+   El cuerpo es la clave sola (`login:hero`) o la clave con el visitante anónimo de la
+   landing (`login:hero|<vid>`), que es lo que manda el front desde el 2026-10-06. Con el
+   visitante, además de sumar la carga, se anota la PERSONA en `visitor_click`: recargar no
+   suma dos. Un front viejo manda la clave sola y se cuenta como siempre. */
+export function recordPulse(pool, body, day) {
+  const [key, vid = ''] = String(body).split('|')
   if (!PULSE_KEYS.has(key)) return null
-  return pool
-    .query(
-      'INSERT INTO pulse (day, k, n) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE n = n + 1',
-      [day, key]
-    )
-    .catch(() => {})
+  const jobs = [
+    pool
+      .query(
+        'INSERT INTO pulse (day, k, n) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE n = n + 1',
+        [day, key]
+      )
+      .catch(() => {}),
+  ]
+  if (key.startsWith('login:') && VID.test(vid)) {
+    jobs.push(pool.query('INSERT IGNORE INTO visitor_click (day, k, vid) VALUES (?, ?, ?)', [day, key, vid]).catch(() => {}))
+  }
+  return Promise.all(jobs)
 }
 
 /* Lo que el panel dibuja. `null` mientras no haya ni una fila: una pasarela que todavía

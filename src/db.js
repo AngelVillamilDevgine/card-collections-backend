@@ -116,6 +116,17 @@ const TABLE_DEFINITIONS = [
      PRIMARY KEY (day, vid)
    ) ${TABLE_OPTIONS}`,
 
+  /* Quién hizo click en un botón de la landing: UN renglón por día, botón y navegador, así
+     que recargar la página de entrada no suma (lo pidió Angel: «si alguien recarga cuenta
+     dos veces»). El contador `pulse` de siempre sigue sumando cargas. La clave primaria
+     empieza por el día y el botón, que es como se la consulta: un rango de días de un botón. */
+  `CREATE TABLE IF NOT EXISTS visitor_click (
+     day DATE        NOT NULL,
+     k   VARCHAR(32) NOT NULL,
+     vid CHAR(16)    NOT NULL,
+     PRIMARY KEY (day, k, vid)
+   ) ${TABLE_OPTIONS}`,
+
   // No tener una carta no es una fila con un cero: es no tener fila.
   `CREATE TABLE IF NOT EXISTS carta (
      usuario_id INT UNSIGNED     NOT NULL,

@@ -8,7 +8,7 @@ import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createDbPool, prepareSchema } from '../src/db.js'
 import { recordPulse, recordVisit, funnelSummary, deviceOf, PULSE_KEYS } from '../src/pulse.js'
-import { buildAdminSummary, clearVisitMarks, todayInArgentina } from '../src/stats.js'
+import { buildAdminSummary, clearVisitMarks, todayInArgentina, periodSummaries } from '../src/stats.js'
 
 const TEST_DB_URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
 
@@ -32,6 +32,7 @@ beforeEach(async () => {
   await pool.query('DELETE FROM pulse')
   await pool.query('DELETE FROM visitor')
   await pool.query('DELETE FROM visitor_day')
+  await pool.query('DELETE FROM visitor_click')
   await pool.query('DELETE FROM usuario')
   clearVisitMarks()
 })
@@ -226,6 +227,72 @@ test('POST /api/pulse con v1 anota al visitante con su aparato', async () => {
   assert.equal(await waitForPulseRow('landing'), 1)
   const [[v]] = await pool.query('SELECT device FROM visitor WHERE vid = ?', [VID])
   assert.equal(v.device, 'android')
+})
+
+/* Un renglón del día anterior: así hoy es un día ENTERO medido por persona (el primero
+   nunca lo es: ver el test de abajo). */
+const seedClickDaysBefore = async (today, days) => {
+  const d = new Date(`${today}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - days)
+  await pool.query('INSERT INTO visitor_click (day, k, vid) VALUES (?, ?, ?)', [d.toISOString().slice(0, 10), 'login:hero', '0000111122223333'])
+}
+
+test('el click con visitante: recargar no suma una persona, y la carga se sigue contando', async () => {
+  const today = todayInArgentina()
+  await seedClickDaysBefore(today, 1)
+  const A = 'cccc111122223333'
+  const B = 'dddd111122223333'
+  await recordPulse(pool, `login:hero|${A}`, today)
+  await recordPulse(pool, `login:hero|${A}`, today)            // recargó
+  await recordPulse(pool, `login:closing|${B}`, today)
+  await recordPulse(pool, 'login:hero', today)                   // un front viejo, sin visitante
+  await recordPulse(pool, 'login:hero|no-es-un-vid', today)      // visitante roto: sólo la carga
+  await recordPulse(pool, `inventada|${A}`, today)              // fuera de la lista: nada
+  const [rows] = await pool.query('SELECT k, vid FROM visitor_click WHERE day = ? ORDER BY k', [today])
+  assert.deepEqual(rows.map((r) => `${r.k}|${r.vid}`), [`login:closing|${B}`, `login:hero|${A}`])
+  const p = await periodSummaries(pool, today)
+  assert.equal(p.hoy.toSignup, 5, 'las cargas siguen sumando todas')
+  assert.equal(p.hoy.toSignupPeople, 2, 'personas: A una vez, B una vez')
+  assert.equal(p.hoy.clicksSince, today)
+  assert.equal(p.semana.toSignupPeople, null, 'la semana empezó antes de que se midiera así: quedan las cargas')
+})
+
+test('el mismo navegador que hace click dos días cuenta UNA persona en la semana', async () => {
+  const today = todayInArgentina()
+  const d = new Date(`${today}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - 6)
+  const weekStart = d.toISOString().slice(0, 10)
+  await seedClickDaysBefore(today, 7)
+  const A = 'eeee111122223333'
+  await recordPulse(pool, `login:hero|${A}`, weekStart)
+  await recordPulse(pool, `login:closing|${A}`, today)
+  const p = await periodSummaries(pool, today)
+  assert.equal(p.semana.clicksSince, weekStart)
+  assert.equal(p.semana.toSignupPeople, 1)
+})
+
+test('el PRIMER día con clicks por persona no cuenta como medido: está partido', async () => {
+  const today = todayInArgentina()
+  await recordPulse(pool, 'login:hero', today)                    // a la mañana, el front viejo
+  await recordPulse(pool, 'login:hero|aaaa999922223333', today)   // a la tarde, el nuevo
+  const p = await periodSummaries(pool, today)
+  assert.equal(p.hoy.toSignupPeople, null, 'hoy quedan las cargas')
+  assert.equal(p.hoy.toSignup, 2)
+  const d = new Date(`${today}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + 1)
+  assert.equal(p.hoy.clicksSince, d.toISOString().slice(0, 10), 'el primer día entero es mañana')
+})
+
+test('POST /api/pulse con el visitante anota la persona y contesta 204', async () => {
+  const r = await app.inject({ method: 'POST', url: '/api/pulse', headers: { 'content-type': 'text/plain' }, payload: 'login:hero|ffff111122223333' })
+  assert.equal(r.statusCode, 204)
+  // La ruta contesta sin esperar a la base (nadie espera por una estadística): se espera acá.
+  let rows = []
+  for (let i = 0; i < 40 && !rows.length; i++) {
+    ;[rows] = await pool.query('SELECT k, vid FROM visitor_click')
+    if (!rows.length) await new Promise((ok) => setTimeout(ok, 25))
+  }
+  assert.deepEqual(rows.map((x) => `${x.k}|${x.vid}`), ['login:hero|ffff111122223333'])
 })
 
 test('las claves que mandan la landing y el formulario están TODAS en la lista blanca', () => {

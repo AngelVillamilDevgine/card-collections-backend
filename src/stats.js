@@ -304,8 +304,8 @@ export const LOADED_MIN_CARDS = 20
 /* El paquete de un rango: todo lo que el panel muestra filtrado. `moved` usa
    `carta.marked_at`, que las filas anteriores a su migración tienen en NULL — esas
    quedan afuera de todos los rangos por igual, que es lo honesto que se puede. */
-async function rangePack(pool, from, to) {
-  const [visitors, visitorsNew, signups, signupsLoaded, [[usage]], [pulses], [moved], [devices]] = await Promise.all([
+async function rangePack(pool, from, to, clicksSince = null) {
+  const [visitors, visitorsNew, signups, signupsLoaded, signupClickers, [[usage]], [pulses], [moved], [devices]] = await Promise.all([
     queryScalar(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [from, to]),
     queryScalar(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [from, to]),
     queryScalar(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${toLocalTime('creado')}) BETWEEN ? AND ?`, [from, to]),
@@ -316,6 +316,10 @@ async function rangePack(pool, from, to) {
         WHERE DATE(${toLocalTime('u.creado')}) BETWEEN ? AND ?
           AND (SELECT COUNT(*) FROM carta c WHERE c.usuario_id = u.id) > ?`,
       [from, to, LOADED_MIN_CARDS]),
+    queryScalar(pool,
+      `SELECT COUNT(DISTINCT vid) FROM visitor_click
+        WHERE day BETWEEN ? AND ? AND k IN ('login:hero', 'login:closing')`,
+      [from, to]),
     /* El uso, partido por la bandera del día: `app=1` es «ese día entró como app
        instalada al menos una vez». Web y app pueden SOLAPARSE (lunes navegador, martes
        app), así que las dos no tienen por qué sumar el total — el total sigue en
@@ -352,6 +356,12 @@ async function rangePack(pool, from, to) {
     usedInstalled: Number(usage.installed),
     landing: byKey.landing ?? 0,
     toSignup: sum('login:hero', 'login:closing'),
+    /* Los mismos clicks contados por PERSONA (navegador), no por carga. Sólo cuando el
+       período entero cae después de que se empezó a anotar así (`clicksSince`): si no,
+       null, y el panel muestra las cargas de siempre en vez de un número que mezcla días
+       medidos de dos maneras. */
+    toSignupPeople: clicksSince && clicksSince <= from ? signupClickers : null,
+    clicksSince,
     toLogin: sum('login:hero-acct', 'login:closing-acct', 'login:direct'),
     moved: { gente: Number(moved[0]?.gente ?? 0), cartas: Number(moved[0]?.cartas ?? 0) },
     devices: devices.map((f) => ({ device: f.device, n: Number(f.n) })),
@@ -360,9 +370,15 @@ async function rangePack(pool, from, to) {
 
 export async function periodSummaries(pool, today) {
   const ranges = periodRanges(today)
+  /* Desde cuándo se cuentan los clicks por persona: el día SIGUIENTE al primer renglón. El
+     primero está partido por construcción —hasta que Pages sirve el front nuevo, los clicks
+     llegan sin visitante y sólo suman cargas—, y contarlo como día medido mostraba ese
+     «Hoy» con media jornada de personas y «Registros» arriba del 100%. Lo encontró la
+     revisión antes del deploy. */
+  const [[{ since }]] = await pool.query("SELECT DATE_FORMAT(MIN(day) + INTERVAL 1 DAY, '%Y-%m-%d') since FROM visitor_click")
   const out = {}
   for (const [name, r] of Object.entries(ranges)) {
-    out[name] = await rangePack(pool, r.from, r.to)
+    out[name] = await rangePack(pool, r.from, r.to, since)
   }
   return out
 }
