@@ -5,11 +5,11 @@
 // muera, y que resetear no toque las cartas ni las sesiones abiertas del dueño.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { conectar, prepararEsquema } from '../src/base.js'
+import { createDbPool, prepareSchema } from '../src/db.js'
 import { resetPassword } from '../src/auth.js'
-import { olvidarVisitas } from '../src/estadisticas.js'
+import { clearVisitMarks } from '../src/stats.js'
 
-const URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
+const TEST_DB_URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
 const USER = 'olvidadizo@ejemplo.com'
 
 let pool
@@ -17,10 +17,10 @@ let app
 let clientSeq = 0
 
 before(async () => {
-  const { crearApp } = await import('../src/servidor.js')
-  pool = conectar(URL)
-  await prepararEsquema(pool)
-  app = crearApp(pool)
+  const { createApp } = await import('../src/servidor.js')
+  pool = createDbPool(TEST_DB_URL)
+  await prepareSchema(pool)
+  app = createApp(pool)
   await app.ready()
 })
 
@@ -31,7 +31,7 @@ after(async () => {
 
 beforeEach(async () => {
   await pool.query('DELETE FROM usuario')
-  olvidarVisitas()
+  clearVisitMarks()
 })
 
 /* Una IP por pedido: el freno a la fuerza bruta cuenta por IP y el `app` es uno solo. */
@@ -42,8 +42,8 @@ const register = async () => {
   assert.equal(r.statusCode, 200, r.body)
   return r.json().token
 }
-const login = (clave) =>
-  app.inject({ method: 'POST', url: '/api/sesion', payload: { usuario: USER, clave }, headers: freshIp() })
+const login = (password) =>
+  app.inject({ method: 'POST', url: '/api/sesion', payload: { usuario: USER, clave: password }, headers: freshIp() })
 const userId = async () => (await pool.query('SELECT id FROM usuario WHERE usuario = ?', [USER]))[0][0].id
 
 test('la provisoria son ocho dígitos, y la clave vieja deja de andar', async () => {

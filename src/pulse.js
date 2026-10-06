@@ -11,7 +11,7 @@
  * el techo de filas es (claves × días), o sea seis por día.
  *
  * Quién manda cada clave:
- *   landing              temprano.js, al cargar la landing sin sesión
+ *   landing              early.js, al cargar la landing sin sesión
  *   login:hero           «Anotá tus faltantes» del héroe            (?f=hero)
  *   login:closing        «Anotá tus faltantes» del cierre           (?f=closing)
  *   login:hero-acct      «Ya tengo cuenta» del héroe                (?f=hero-acct)
@@ -19,7 +19,7 @@
  *   login:direct         el formulario sin venir de la landing (URL directa, marcador)
  *
  * Sin dependencias a propósito: el día llega por parámetro (quien llama ya tiene
- * `hoyAca()`) y así esto se prueba solo, sin base y sin reloj. */
+ * `todayInArgentina()`) y así esto se prueba solo, sin base y sin reloj. */
 
 export const PULSE_KEYS = new Set([
   'landing',
@@ -102,7 +102,7 @@ export function recordVisit(pool, raw, day, ua, log) {
   return Promise.all(jobs)
 }
 
-/* Sin await en quien llama, igual que `anotarVisita`: nadie tiene que esperar por una
+/* Sin await en quien llama, igual que `recordUserVisit`: nadie tiene que esperar por una
    estadística. Devuelve la promesa por si los tests quieren esperarla. */
 export function recordPulse(pool, key, day) {
   if (!PULSE_KEYS.has(key)) return null

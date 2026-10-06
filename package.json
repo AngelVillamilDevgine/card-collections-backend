@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/servidor.js",
     "dev": "node --watch src/servidor.js",
-    "importar": "node bin/importar.js",
+    "import-collection": "node bin/import-collection.js",
     "test": "node --test --test-concurrency=1"
   },
   "dependencies": {

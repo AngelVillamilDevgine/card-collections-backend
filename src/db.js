@@ -8,9 +8,9 @@ import { normalizeWhatsapp } from './profile.js'
 
 // utf8mb4_unicode_ci no distingue mayúsculas, así que "Angel" y "angel" son el mismo
 // usuario y el UNIQUE de abajo lo impide sin tener que normalizar nada a mano.
-const COLACION = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+const TABLE_OPTIONS = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 
-const TABLAS = [
+const TABLE_DEFINITIONS = [
   `CREATE TABLE IF NOT EXISTS usuario (
      id          INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
      usuario     VARCHAR(64)  NOT NULL,
@@ -32,7 +32,7 @@ const TABLAS = [
      signup_net  CHAR(64)     NULL,
      UNIQUE KEY usuario_unico (usuario),
      KEY alta_por_conexion (signup_net, creado)
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   // Se guarda el sha256 del token, no el token: si alguien se lleva la base, no se
   // lleva sesiones vivas.
@@ -45,7 +45,7 @@ const TABLAS = [
      KEY sesion_por_vencimiento (vence),
      CONSTRAINT sesion_de_usuario FOREIGN KEY (usuario_id)
        REFERENCES usuario(id) ON DELETE CASCADE
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   // Un día en que el usuario usó la app. Sirve para lo único que importa saber:
   // cuántos vuelven. Antes se miraba `sesion`, pero una sesión dura 30 días, así que
@@ -60,7 +60,7 @@ const TABLAS = [
      clave       VARCHAR(40) NOT NULL PRIMARY KEY,
      valor       TEXT        NOT NULL,
      actualizado TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   `CREATE TABLE IF NOT EXISTS visita (
      usuario_id INT UNSIGNED NOT NULL,
@@ -70,7 +70,7 @@ const TABLAS = [
      KEY visita_por_dia (dia),
      CONSTRAINT visita_de_usuario FOREIGN KEY (usuario_id)
        REFERENCES usuario(id) ON DELETE CASCADE
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   /* LA PASARELA: contadores anónimos por día, para el escalón que `visita` no puede ver
      — el de ANTES de tener cuenta. Lo pidió Angel el 2026-09-29 («faltan gráficos de
@@ -87,7 +87,7 @@ const TABLAS = [
      k   VARCHAR(24)  NOT NULL,
      n   INT UNSIGNED NOT NULL DEFAULT 0,
      PRIMARY KEY (day, k)
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   /* PERSONAS DISTINTAS, no cargas. Lo pidió Angel el 2026-09-29: «si es la misma persona
      10 veces cuenta 1, pero si son 10 personas cuentan 10, aunque tengan sesión». Eso no
@@ -108,13 +108,13 @@ const TABLAS = [
      with_session TINYINT UNSIGNED NOT NULL DEFAULT 0,
      standalone   TINYINT UNSIGNED NOT NULL DEFAULT 0,
      device       VARCHAR(12)      NOT NULL DEFAULT 'otro'
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   `CREATE TABLE IF NOT EXISTS visitor_day (
      day DATE     NOT NULL,
      vid CHAR(16) NOT NULL,
      PRIMARY KEY (day, vid)
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 
   // No tener una carta no es una fila con un cero: es no tener fila.
   `CREATE TABLE IF NOT EXISTS carta (
@@ -128,18 +128,18 @@ const TABLAS = [
      PRIMARY KEY (usuario_id, clave),
      CONSTRAINT carta_de_usuario FOREIGN KEY (usuario_id)
        REFERENCES usuario(id) ON DELETE CASCADE
-   ) ${COLACION}`,
+   ) ${TABLE_OPTIONS}`,
 ]
 
 /* La URL lleva la contraseña del MySQL, así que en producción no viaja como variable
    de entorno sino como secret del swarm, que Docker deja en un archivo. */
-export function urlDeConexion() {
-  const archivo = process.env.DBZ_MYSQL_URL_FILE
-  if (archivo) return fs.readFileSync(archivo, 'utf8').trim()
+export function readConnectionUrl() {
+  const secretFile = process.env.DBZ_MYSQL_URL_FILE
+  if (secretFile) return fs.readFileSync(secretFile, 'utf8').trim()
   return process.env.DBZ_MYSQL_URL
 }
 
-export function conectar(url = urlDeConexion()) {
+export function createDbPool(url = readConnectionUrl()) {
   if (!url) throw new Error('Falta DBZ_MYSQL_URL (o DBZ_MYSQL_URL_FILE)')
   const pool = mysql.createPool({
     uri: url,
@@ -165,16 +165,16 @@ export function conectar(url = urlDeConexion()) {
 
   /* Cada conexión dice en qué huso está, y no se da por sentado.
 
-     El SQL de las estadísticas convierte de UTC a -03:00 (`aca()` en estadisticas.js) y
+     El SQL de las estadísticas convierte de UTC a -03:00 (`toLocalTime()` en stats.js) y
      la opción `timezone: 'Z'` de arriba NO alcanza: ésa sólo le dice a mysql2 cómo pasar
      un DATETIME a Date de JavaScript, no ejecuta ningún `SET time_zone`. O sea que todo
      dependía de con qué huso levantara el contenedor de MySQL.
 
      Si alguna vez se recreara con otro, las cuentas se correrían tres horas sin que nadie
-     se entere, y las filas de `visita` —que las escribe el JS con hoyAca()— dejarían de
+     se entere, y las filas de `visita` —que las escribe el JS con todayInArgentina()— dejarían de
      alinearse con las que compara el SQL. El número de "cuántos vuelven", que es el que
      decide sobre la app, se habría inflado solo. */
-  pool.on('connection', (conexion) => conexion.query("SET time_zone = '+00:00'"))
+  pool.on('connection', (connection) => connection.query("SET time_zone = '+00:00'"))
 
   return pool
 }
@@ -188,7 +188,7 @@ export function conectar(url = urlDeConexion()) {
    contesta lo que de verdad importa para esa decisión: si el proceso llega al MySQL.
 
    Una conexión de más sobre un pool de diez es barato al lado de un reinicio en falso. */
-export function conectarSalud(url = urlDeConexion()) {
+export function createHealthPool(url = readConnectionUrl()) {
   return mysql.createPool({
     uri: url,
     waitForConnections: true,
@@ -202,16 +202,16 @@ export function conectarSalud(url = urlDeConexion()) {
   })
 }
 
-export async function prepararEsquema(pool) {
-  for (const sql of TABLAS) await pool.query(sql)
-  await ensancharUsuario(pool)
-  await columnaApp(pool)
+export async function prepareSchema(pool) {
+  for (const sql of TABLE_DEFINITIONS) await pool.query(sql)
+  await widenUsernameColumn(pool)
+  await addVisitAppColumn(pool)
   await addMarkedAt(pool)
   await addMustChange(pool)
   await addProfileColumns(pool)
   await normalizeWhatsappColumn(pool)
   await addSignupNet(pool)
-  await sembrarVisitas(pool)
+  await seedVisits(pool)
 }
 
 /* De qué conexión salió cada alta, como HMAC (signup.js), para el tope de tres por día.
@@ -277,7 +277,7 @@ async function normalizeWhatsappColumn(pool) {
    servidor no puede mandar mail), y hasta el 2026-09-30 no había cómo resetearla: el
    primer caso fue Gabriel Rivarola, con 2845 cartas cargadas. `bin/reset-password.js`
    le pone una clave provisoria y prende esta marca; la app, al verla, no deja hacer nada
-   hasta elegir una clave propia, y `cambiarClave` la apaga. Así la provisoria —que viajó
+   hasta elegir una clave propia, y `changePassword` la apaga. Así la provisoria —que viajó
    por WhatsApp y la conocen dos personas— dura lo que tarda en entrar.
 
    Migración aparte y no sólo en el CREATE, por lo de siempre: CREATE TABLE IF NOT EXISTS
@@ -318,12 +318,12 @@ async function addProfileColumns(pool) {
   }
 }
 
-async function columnaApp(pool) {
-  const [filas] = await pool.query(
+async function addVisitAppColumn(pool) {
+  const [rows] = await pool.query(
     `SELECT 1 FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'visita' AND COLUMN_NAME = 'app'`
   )
-  if (!filas.length)
+  if (!rows.length)
     await pool.query('ALTER TABLE visita ADD COLUMN app TINYINT UNSIGNED NOT NULL DEFAULT 0')
 }
 
@@ -367,31 +367,31 @@ async function addMarkedAt(pool) {
    clave. No es todo lo que hizo, pero es mejor que empezar de cero.
 
    Sólo la primera vez: si la tabla tiene algo, esto no corre. */
-async function sembrarVisitas(pool) {
-  const [[{ hay }]] = await pool.query('SELECT COUNT(*) hay FROM visita')
-  if (hay) return
-  const aca = (col) => `DATE(CONVERT_TZ(${col}, '+00:00', '-03:00'))`
+async function seedVisits(pool) {
+  const [[{ visitCount }]] = await pool.query('SELECT COUNT(*) visitCount FROM visita')
+  if (visitCount) return
+  const toLocalDate = (col) => `DATE(CONVERT_TZ(${col}, '+00:00', '-03:00'))`
   await pool.query(`INSERT IGNORE INTO visita (usuario_id, dia)
-                    SELECT id, ${aca('creado')} FROM usuario`)
+                    SELECT id, ${toLocalDate('creado')} FROM usuario`)
   await pool.query(`INSERT IGNORE INTO visita (usuario_id, dia)
-                    SELECT usuario_id, ${aca('creado')} FROM sesion`)
+                    SELECT usuario_id, ${toLocalDate('creado')} FROM sesion`)
 }
 
 /* La columna nació de 32 y un mail entra justo o no entra. CREATE TABLE IF NOT EXISTS
    no toca una tabla que ya existe, así que hay que ensancharla a mano — sólo si hace
    falta, para no reconstruir la tabla en cada arranque. */
-async function ensancharUsuario(pool) {
-  const [filas] = await pool.query(
-    `SELECT CHARACTER_MAXIMUM_LENGTH largo FROM information_schema.COLUMNS
+async function widenUsernameColumn(pool) {
+  const [rows] = await pool.query(
+    `SELECT CHARACTER_MAXIMUM_LENGTH maxLength FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usuario' AND COLUMN_NAME = 'usuario'`
   )
-  if (filas[0] && filas[0].largo < 64) {
+  if (rows[0] && rows[0].maxLength < 64) {
     await pool.query('ALTER TABLE usuario MODIFY COLUMN usuario VARCHAR(64) NOT NULL')
   }
 }
 
 /* Las sesiones vencidas no se borran solas. Se limpia al arrancar y una vez por día. */
-export async function borrarVencidas(pool) {
+export async function deleteExpiredSessions(pool) {
   const [r] = await pool.query('DELETE FROM sesion WHERE vence < NOW()')
   return r.affectedRows
 }

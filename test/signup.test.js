@@ -2,20 +2,20 @@
 // conexión no se crean más de tres cuentas por día. Ver src/signup.js.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { conectar, prepararEsquema } from '../src/base.js'
-import { olvidarVisitas } from '../src/estadisticas.js'
+import { createDbPool, prepareSchema } from '../src/db.js'
+import { clearVisitMarks } from '../src/stats.js'
 import { looksLikeTestEmail, networkOf, connectionKey, SIGNUPS_PER_CONNECTION } from '../src/signup.js'
 
-const URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
+const TEST_DB_URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
 let pool
 let app
 let seq = 0
 
 before(async () => {
-  const { crearApp } = await import('../src/servidor.js')
-  pool = conectar(URL)
-  await prepararEsquema(pool)
-  app = crearApp(pool)
+  const { createApp } = await import('../src/servidor.js')
+  pool = createDbPool(TEST_DB_URL)
+  await prepareSchema(pool)
+  app = createApp(pool)
   await app.ready()
 })
 
@@ -26,11 +26,11 @@ after(async () => {
 
 beforeEach(async () => {
   await pool.query('DELETE FROM usuario')
-  olvidarVisitas()
+  clearVisitMarks()
 })
 
-const signup = (usuario, ip) => app.inject({
-  method: 'POST', url: '/api/registro', payload: { usuario, clave: 'kamehameha' },
+const signup = (user, ip) => app.inject({
+  method: 'POST', url: '/api/registro', payload: { usuario: user, clave: 'kamehameha' },
   headers: { 'cf-connecting-ip': ip },
 })
 
@@ -67,9 +67,9 @@ test('registrarse con un mail de prueba: 400 y no se crea nada', async () => {
 test(`desde una misma conexión, ${SIGNUPS_PER_CONNECTION} cuentas por día y no más`, async () => {
   for (let i = 1; i <= SIGNUPS_PER_CONNECTION; i++)
     assert.equal((await signup(`hermano${i}@gmail.com`, '10.20.1.1')).statusCode, 200, `la ${i}`)
-  const otra = await signup('otro@gmail.com', '10.20.1.1')
-  assert.equal(otra.statusCode, 429)
-  assert.match(otra.json().error, /esta conexión/)
+  const overLimit = await signup('otro@gmail.com', '10.20.1.1')
+  assert.equal(overLimit.statusCode, 429)
+  assert.match(overLimit.json().error, /esta conexión/)
   // Otra conexión, sin problema.
   assert.equal((await signup('vecino@gmail.com', '10.20.1.2')).statusCode, 200)
 })
@@ -108,11 +108,11 @@ test('la red de una IP: IPv4 entera, IPv6 en /64 escrita siempre igual', () => {
    que llegaban juntas (diez desde una IP, cuarenta desde una /64). */
 test('las altas que llegan JUNTAS desde una conexión también son tres', async () => {
   const extra = SIGNUPS_PER_CONNECTION + 4
-  const juntas = await Promise.all(Array.from({ length: extra }, (_, i) => signup(`juntas${i}@gmail.com`, '10.20.3.1')))
-  assert.equal(juntas.filter((r) => r.statusCode === 200).length, SIGNUPS_PER_CONNECTION)
-  assert.equal(juntas.filter((r) => r.statusCode === 429).length, extra - SIGNUPS_PER_CONNECTION)
-  const seis = await Promise.all(Array.from({ length: extra }, (_, i) => signup(`seisjuntas${i}@gmail.com`, `2800:810:4a5:9::${i + 1}`)))
-  assert.equal(seis.filter((r) => r.statusCode === 200).length, SIGNUPS_PER_CONNECTION)
+  const concurrentSignups = await Promise.all(Array.from({ length: extra }, (_, i) => signup(`juntas${i}@gmail.com`, '10.20.3.1')))
+  assert.equal(concurrentSignups.filter((r) => r.statusCode === 200).length, SIGNUPS_PER_CONNECTION)
+  assert.equal(concurrentSignups.filter((r) => r.statusCode === 429).length, extra - SIGNUPS_PER_CONNECTION)
+  const concurrentIpv6Signups = await Promise.all(Array.from({ length: extra }, (_, i) => signup(`seisjuntas${i}@gmail.com`, `2800:810:4a5:9::${i + 1}`)))
+  assert.equal(concurrentIpv6Signups.filter((r) => r.statusCode === 200).length, SIGNUPS_PER_CONNECTION)
   const [[{ n }]] = await pool.query('SELECT COUNT(*) n FROM usuario')
   assert.equal(n, 2 * SIGNUPS_PER_CONNECTION)
 })

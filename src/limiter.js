@@ -1,6 +1,6 @@
 /* El freno a la fuerza bruta.
  *
- * Vivía adentro de `armarServidor`, en un closure, y por eso NO SE PODÍA PROBAR: lo único
+ * Vivía adentro de `createApp`, en un closure, y por eso NO SE PODÍA PROBAR: lo único
  * que se le podía hacer era pegarle por HTTP, y las dos reglas que más importan —el tope de
  * baldes y a quién se desaloja— necesitan cinco mil baldes, o sea cinco mil scrypt. Nadie
  * corre ese test. Acá afuera son microsegundos y el reloj se puede inyectar.
@@ -47,9 +47,9 @@ export function createLimiter({
   const trim = (part) => (part == null ? '' : String(part).slice(0, maxKeyPart))
   const key = (...parts) => parts.map(trim).join('|')
 
-  const fresh = (b, t) => t - b.desde <= window
+  const fresh = (b, t) => t - b.startedAt <= window
 
-  /* LEER NO CREA BALDE, y es la mitad del arreglo. `frenado` llamaba al creador: un pedido
+  /* LEER NO CREA BALDE, y es la mitad del arreglo. `isBlocked` llamaba al creador: un pedido
      que ya salía frenado —429 antes del scrypt, o sea gratis para quien lo manda— igual
      estrenaba un balde por cada usuario inventado, así que el Map se llenaba sin pagar
      nada. Ahora llenarlo cuesta un fracaso de verdad cada vez, con su scrypt, y esos
@@ -61,12 +61,12 @@ export function createLimiter({
 
   function bucket(k) {
     const t = now()
-    const previo = buckets.get(k)
-    if (previo && fresh(previo, t)) return previo
+    const existing = buckets.get(k)
+    if (existing && fresh(existing, t)) return existing
     if (buckets.size >= maxBuckets) evict()
-    const nuevo = { n: 0, desde: t }
-    buckets.set(k, nuevo)
-    return nuevo
+    const newBucket = { n: 0, startedAt: t }
+    buckets.set(k, newBucket)
+    return newBucket
   }
 
   /* SE TIRAN LOS QUE MENOS SABEN, NO LOS MÁS VIEJOS.
@@ -82,9 +82,9 @@ export function createLimiter({
      cincuenta mil fracasos de verdad. */
   function evict() {
     const t = now()
-    const vale = (b) => (fresh(b, t) ? b.n : -1)
-    const peores = [...buckets.entries()].sort((a, b) => vale(a[1]) - vale(b[1]) || a[1].desde - b[1].desde)
-    for (const [k] of peores) {
+    const scoreOf = (b) => (fresh(b, t) ? b.n : -1)
+    const evictionOrder = [...buckets.entries()].sort((a, b) => scoreOf(a[1]) - scoreOf(b[1]) || a[1].startedAt - b[1].startedAt)
+    for (const [k] of evictionOrder) {
       buckets.delete(k)
       if (buckets.size < maxBuckets * 0.9) break
     }

@@ -43,10 +43,10 @@ const TEST_WORD = /^(test|tests|testing|tester|prueba|pruebas|probando|demo|fake
 const TEST_ALONE = /^(asd|asdf|asdasd|qwe|qwerty|a{3,}|x{3,})$/
 const TEST_DOMAIN = /^(example\.(com|org|net)|test\.com|prueba\.com|mailinator\.com)$/
 
-export function looksLikeTestEmail(mail) {
+export function looksLikeTestEmail(email) {
   /* NFKC lleva las letras «anchas» (ｔｅｓｔ) a las de siempre, y \p{Cf} saca los
      caracteres invisibles: si no, «te[espacio invisible]st» pasaba y la base lo guardaba igual a «test». */
-  const plain = String(mail).normalize('NFKC').replace(/\p{Cf}/gu, '')
+  const plain = String(email).normalize('NFKC').replace(/\p{Cf}/gu, '')
   const [local = '', domain = ''] = plain.toLowerCase().split('@')
   const bare = local.split('+')[0].replace(/\./g, '')
   return TEST_WORD.test(bare) || TEST_ALONE.test(bare) || TEST_DOMAIN.test(domain)

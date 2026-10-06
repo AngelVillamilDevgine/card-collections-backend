@@ -11,7 +11,7 @@
 // el 2026-09-30 no había cómo resetearla. Esto le pone una clave provisoria de ocho
 // dígitos al azar, la imprime para dictársela, y prende la marca que hace que la app no
 // lo deje seguir hasta elegir una propia. No toca sus cartas ni sus sesiones abiertas.
-import { conectar, prepararEsquema } from '../src/base.js'
+import { createDbPool, prepareSchema } from '../src/db.js'
 import { resetPassword } from '../src/auth.js'
 
 const [username] = process.argv.slice(2)
@@ -20,8 +20,8 @@ if (!username) {
   process.exit(1)
 }
 
-const pool = conectar()
-await prepararEsquema(pool)
+const pool = createDbPool()
+await prepareSchema(pool)
 
 const [rows] = await pool.query('SELECT id, usuario FROM usuario WHERE usuario = ?', [username])
 if (!rows.length) {

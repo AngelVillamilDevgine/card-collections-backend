@@ -56,7 +56,7 @@ migración aparte.
 ## Traer una colección de antes
 
 ```sh
-node bin/importar.js angel ../datos/coleccion.json
+node bin/import-collection.js angel ../datos/coleccion.json
 ```
 
 Entiende las formas viejas del archivo. Si el usuario ya tiene cartas avisa y no hace

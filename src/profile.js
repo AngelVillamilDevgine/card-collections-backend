@@ -8,7 +8,7 @@
  * no viene queda vacío. Es más simple de razonar que un parche campo por campo, y el
  * formulario es uno solo.
  *
- * La validación vive acá y no en la ruta, igual que `revisarReemplazo`: así la prueban
+ * La validación vive acá y no en la ruta, igual que `validateReplacement`: así la prueban
  * los tests sin HTTP y nadie puede escribir la base salteándosela. */
 
 import { parsePhoneNumberFromString, validatePhoneNumberLength } from 'libphonenumber-js/min'

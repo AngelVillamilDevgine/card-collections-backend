@@ -5,11 +5,11 @@
 // del admin — a cualquier otro, 404, igual que el resumen.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { conectar, prepararEsquema } from '../src/base.js'
+import { createDbPool, prepareSchema } from '../src/db.js'
 import { validateProfile, normalizeWhatsapp, PROVINCES } from '../src/profile.js'
-import { olvidarVisitas, resumen } from '../src/estadisticas.js'
+import { clearVisitMarks, buildAdminSummary } from '../src/stats.js'
 
-const URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
+const TEST_DB_URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
 const ADMIN = 'boss@ejemplo.com'
 const ANA = 'ana@ejemplo.com'
 const BETO = 'beto@ejemplo.com'
@@ -20,10 +20,10 @@ let clientSeq = 0
 
 before(async () => {
   process.env.DBZ_ADMINS = ADMIN // antes de importar el servidor: se lee al cargarlo
-  const { crearApp } = await import('../src/servidor.js')
-  pool = conectar(URL)
-  await prepararEsquema(pool)
-  app = crearApp(pool)
+  const { createApp } = await import('../src/servidor.js')
+  pool = createDbPool(TEST_DB_URL)
+  await prepareSchema(pool)
+  app = createApp(pool)
   await app.ready()
 })
 
@@ -35,7 +35,7 @@ after(async () => {
 
 beforeEach(async () => {
   await pool.query('DELETE FROM usuario')
-  olvidarVisitas()
+  clearVisitMarks()
 })
 
 const freshIp = () => ({ 'cf-connecting-ip': `10.8.0.${++clientSeq}` })
@@ -150,8 +150,8 @@ test('lo guardado antes pasa a sólo dígitos, lo ilegible queda vacío, y no se
   for (const [user, whatsapp] of Object.entries(legacy))
     await pool.query("INSERT INTO usuario (usuario, hash, whatsapp) VALUES (?, 'x', ?)", [user, whatsapp])
   const warned = await quietly(async () => {
-    await prepararEsquema(pool)
-    await prepararEsquema(pool) // la segunda no toca nada
+    await prepareSchema(pool)
+    await prepareSchema(pool) // la segunda no toca nada
   })
   assert.deepEqual(await numbers(), {
     'a@x.com': '5493516710050', 'b@x.com': '5491155551234', 'c@x.com': '5493516710050', 'd@x.com': null,
@@ -168,7 +168,7 @@ test('lo guardado antes pasa a sólo dígitos, lo ilegible queda vacío, y no se
 
 test('lo que la versión vieja guarde con formato después, lo convierte el próximo arranque', async () => {
   await pool.query("INSERT INTO usuario (usuario, hash, whatsapp) VALUES ('a@x.com', 'x', '5493516710050'), ('b@x.com', 'x', '11 4444-9999')")
-  await quietly(() => prepararEsquema(pool))
+  await quietly(() => prepareSchema(pool))
   assert.deepEqual(await numbers(), { 'a@x.com': '5493516710050', 'b@x.com': '5491144449999' })
 })
 
@@ -266,7 +266,7 @@ test('una cuenta que no existe, o que no viene, no rompe nada', async () => {
 test('la lista del panel trae el perfil y la marca de provisoria de cada uno', async () => {
   const ana = await register(ANA)
   await app.inject({ method: 'PUT', url: '/api/profile', headers: auth(ana), payload: FULL })
-  const d = await resumen(pool)
+  const d = await buildAdminSummary(pool)
   const row = d.gente.find((g) => g.usuario === ANA)
   assert.deepEqual(row.profile, STORED)
   assert.equal(row.mustChange, false)
