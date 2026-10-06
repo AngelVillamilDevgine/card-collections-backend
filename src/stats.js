@@ -295,14 +295,27 @@ export function periodRanges(today) {
   }
 }
 
+/* La estación que sigue a «Registros»: de los que se registraron en el período, cuántos
+   tienen HOY más de estas cartas marcadas. Lo pidió Angel: «si carga 1 o ninguna no me
+   interesa a fines prácticos». Cuenta cartas distintas (filas), no copias: tener la 5 tres
+   veces no es haber cargado tres cartas. */
+export const LOADED_MIN_CARDS = 20
+
 /* El paquete de un rango: todo lo que el panel muestra filtrado. `moved` usa
    `carta.marked_at`, que las filas anteriores a su migración tienen en NULL — esas
    quedan afuera de todos los rangos por igual, que es lo honesto que se puede. */
 async function rangePack(pool, from, to) {
-  const [visitors, visitorsNew, signups, [[usage]], [pulses], [moved], [devices]] = await Promise.all([
+  const [visitors, visitorsNew, signups, signupsLoaded, [[usage]], [pulses], [moved], [devices]] = await Promise.all([
     queryScalar(pool, 'SELECT COUNT(DISTINCT vid) FROM visitor_day WHERE day BETWEEN ? AND ?', [from, to]),
     queryScalar(pool, 'SELECT COUNT(*) FROM visitor WHERE first_day BETWEEN ? AND ?', [from, to]),
     queryScalar(pool, `SELECT COUNT(*) FROM usuario WHERE DATE(${toLocalTime('creado')}) BETWEEN ? AND ?`, [from, to]),
+    /* La subconsulta cae sobre la primaria de `carta`, que empieza por `usuario_id`: es
+       contar el índice de unas pocas cuentas, no recorrer la tabla. */
+    queryScalar(pool,
+      `SELECT COUNT(*) FROM usuario u
+        WHERE DATE(${toLocalTime('u.creado')}) BETWEEN ? AND ?
+          AND (SELECT COUNT(*) FROM carta c WHERE c.usuario_id = u.id) > ?`,
+      [from, to, LOADED_MIN_CARDS]),
     /* El uso, partido por la bandera del día: `app=1` es «ese día entró como app
        instalada al menos una vez». Web y app pueden SOLAPARSE (lunes navegador, martes
        app), así que las dos no tienen por qué sumar el total — el total sigue en
@@ -333,7 +346,7 @@ async function rangePack(pool, from, to) {
   const sum = (...ks) => ks.reduce((a, k) => a + (byKey[k] ?? 0), 0)
   return {
     desde: from, hasta: to,
-    visitors, visitorsNew, signups,
+    visitors, visitorsNew, signups, signupsLoaded,
     usedApp: Number(usage.total),
     usedWeb: Number(usage.web),
     usedInstalled: Number(usage.installed),

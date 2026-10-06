@@ -5,7 +5,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createDbPool, prepareSchema } from '../src/db.js'
-import { periodRanges, periodSummaries, buildAdminSummary, clearVisitMarks, todayInArgentina } from '../src/stats.js'
+import { periodRanges, periodSummaries, buildAdminSummary, clearVisitMarks, todayInArgentina, LOADED_MIN_CARDS } from '../src/stats.js'
 import { recordVisit } from '../src/pulse.js'
 
 const TEST_DB_URL = process.env.DBZ_MYSQL_URL_TEST ?? 'mysql://root:prueba@127.0.0.1:3307/dbz_prueba'
@@ -76,6 +76,27 @@ test('el paquete junta altas, uso, movimiento de cartas y aparatos del rango', a
   assert.deepEqual(p.hoy.moved, { gente: 1, cartas: 1 })
   assert.deepEqual(p.hoy.devices, [{ device: 'iphone', n: 1 }])
   assert.equal(p.hoy.visitorsNew, 1)
+})
+
+test('«cargaron más de 20»: de los registrados en el período, los que tienen MÁS de 20 cartas distintas', async () => {
+  const today = todayInArgentina()
+  const ids = []
+  for (const name of ['a@e.com', 'b@e.com', 'c@e.com', 'd@e.com']) {
+    const [u] = await pool.query('INSERT INTO usuario (usuario, hash) VALUES (?, ?)', [name, 'x'])
+    ids.push(u.insertId)
+  }
+  const mark = (id, n, quantity = 1) => {
+    const rows = Array.from({ length: n }, (_, i) => [id, `exp-1:${i + 1}`, quantity])
+    return n ? pool.query('INSERT INTO carta (usuario_id, clave, cantidad) VALUES ?', [rows]) : null
+  }
+  await mark(ids[0], LOADED_MIN_CARDS + 1)   // 21: cuenta
+  await mark(ids[1], LOADED_MIN_CARDS)       // 20 justas: no es «más de 20»
+  await mark(ids[2], 3, 9)                   // 3 cartas con 9 copias cada una: no son 27 cartas
+  // ids[3], ninguna
+  const p = await periodSummaries(pool, today)
+  assert.equal(p.hoy.signups, 4)
+  assert.equal(p.hoy.signupsLoaded, 1)
+  assert.equal(p.semana.signupsLoaded, 1, 'el mismo registro cae también en la semana')
 })
 
 test('el resumen del panel lleva los cuatro períodos', async () => {
