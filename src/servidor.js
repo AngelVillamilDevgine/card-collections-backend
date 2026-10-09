@@ -55,6 +55,26 @@ export function createApp(pool, healthPool = pool) {
      cabecera. Van dos horas y no un día porque **Chrome recorta a 7200 y descarta lo que
      se pase**; Firefox acepta 86400. Poner 86400 haría que Chrome —que es por donde entra
      casi toda la gente— se quedara sin nada. */
+  /* HSTS también en la API, y no sólo en el front.
+
+     La cabecera es POR HOST: la que manda cromeros.com.ar no cubre a
+     api.cromeros.com.ar. Y acá importa igual o más, porque por esta puerta viajan el
+     token de sesión en cada pedido y la clave al entrar. La primera visita es la única
+     ventana que esto cierra —el `http://` que el navegador intenta antes de que lo
+     redirijan—, pero es la ventana donde quien esté en el medio se lleva todo.
+
+     Sin `preload` y sin `includeSubDomains`, por las mismas razones que en el `_headers`
+     del front: las dos son puertas de una sola dirección y ninguna hace falta para tener
+     el beneficio.
+
+     Y VA ANTES del register de CORS, a propósito: el plugin contesta el preflight ADENTRO
+     de su propio hook y corta ahí, así que un hook dado de alta después no corre para el
+     OPTIONS — el 204 del preflight salía sin HSTS (medido en producción el 09-10; los
+     hooks corren en orden de alta). Hay un caso OPTIONS en el test de HSTS. */
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('Strict-Transport-Security', 'max-age=31536000')
+  })
+
   app.register(cors, { origin: ALLOWED_ORIGINS, credentials: false, maxAge: 7200 })
 
   /* --- Freno a la fuerza bruta -------------------------------------------------
@@ -120,20 +140,6 @@ export function createApp(pool, healthPool = pool) {
   sweepTimer.unref()
   app.addHook('onClose', () => clearInterval(sweepTimer))
 
-  /* HSTS también en la API, y no sólo en el front.
-
-     La cabecera es POR HOST: la que manda cromeros.com.ar no cubre a
-     api.cromeros.com.ar. Y acá importa igual o más, porque por esta puerta viajan el
-     token de sesión en cada pedido y la clave al entrar. La primera visita es la única
-     ventana que esto cierra —el `http://` que el navegador intenta antes de que lo
-     redirijan—, pero es la ventana donde quien esté en el medio se lleva todo.
-
-     Sin `preload` y sin `includeSubDomains`, por las mismas razones que en el `_headers`
-     del front: las dos son puertas de una sola dirección y ninguna hace falta para tener
-     el beneficio. */
-  app.addHook('onRequest', async (request, reply) => {
-    reply.header('Strict-Transport-Security', 'max-age=31536000')
-  })
 
   /* LO QUE FASTIFY CONTESTA SOLO VIENE EN INGLÉS, y el front lo muestra tal cual.
      Su cuerpo de error es `{ statusCode, error, message }`, donde `error` es el NOMBRE del

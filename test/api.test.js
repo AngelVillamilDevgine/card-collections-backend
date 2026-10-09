@@ -713,6 +713,13 @@ test('todas las respuestas llevan HSTS, salgan bien o mal', async () => {
     ['el healthcheck, sin token', { method: 'GET', url: '/api/salud' }],
     ['un 401', { method: 'GET', url: '/api/coleccion' }],
     ['un 404', { method: 'GET', url: '/api/no-existe' }],
+    /* El preflight lo contesta el plugin de CORS adentro de su propio hook: si el hook de
+       HSTS se da de alta después del register, este 204 sale sin la cabecera. Pasó. */
+    ['el preflight de CORS', { method: 'OPTIONS', url: '/api/cartas/x', headers: {
+      origin: 'http://localhost:5173',
+      'access-control-request-method': 'PUT',
+      'access-control-request-headers': 'content-type,authorization',
+    } }],
   ]
   for (const [caseName, requestOptions] of cases) {
     const r = await request(requestOptions)
