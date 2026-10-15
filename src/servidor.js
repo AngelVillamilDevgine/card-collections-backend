@@ -540,13 +540,47 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     .then(() => app.log.info(`origenes permitidos: ${ALLOWED_ORIGINS.join(', ')}`))
     .catch((e) => { app.log.error(e); process.exit(1) })
 
-  // Docker manda SIGTERM al reemplazar el contenedor: cerrar prolijo evita cortar
-  // un guardado a la mitad.
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.on(signal, async () => {
+  /* Docker manda SIGTERM al reemplazar el contenedor, y CERRAR AL INSTANTE ERA EL BUG:
+     el Traefik del edge está en modo swarm, que descubre los cambios POR SONDEO (sin
+     swarmModeRefreshSeconds configurado son 15 segundos), así que después de que la tarea
+     vieja muere le sigue mandando tráfico hasta 15 segundos — y la IP del contenedor
+     muerto no rechaza: desaparece del overlay y el pedido CUELGA 30 segundos hasta el 504,
+     que Cloudflare envuelve en su página HTML. Medido en producción el 09-10: un
+     /api/salud que entró en el mismo segundo del apagado (19:43:28,8) colgó 30,005 s y
+     salió 504, una vez por deploy desde que hay deploys.
+
+     Así que al SIGTERM el viejo SIGUE SIRVIENDO 18 segundos —más que el sondeo de 15—
+     y recién ahí cierra: para cuando deja de escuchar, Traefik ya no lo tiene en la
+     rotación. Los números tienen que cerrar con la gracia del swarm: 18 de drenaje
+     + hasta 8 de cierre < 30 s de stop_grace_period (subido de los 10 por defecto con
+     `docker service update --stop-grace-period=30s dbz-api_api`; el stack lo documenta,
+     pero el stack no se re-aplica solo). El Traefik del edge es de los clientes y no se
+     toca: por eso el arreglo vive de este lado.
+
+     SIGINT queda inmediato: es el Ctrl+C de npm run dev, y ahí no hay ningún Traefik
+     esperando. Ojo si algún día el dev corre en Linux o Mac: node --watch reinicia al
+     hijo con SIGTERM, o sea que cada guardado de archivo esperaría los 18 segundos.
+     Acá no pasa porque el dev es Windows, donde Node no entrega SIGTERM (el Ctrl+C es
+     SIGINT), y en producción no hay --watch. */
+  const DRAIN_MS = 18_000
+  let shuttingDown = false
+  const shutDown = async (drainMs) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    if (drainMs > 0) {
+      app.log.info(`apagando: sigo sirviendo ${drainMs / 1000}s mientras el proxy me saca de la rotación`)
+      await new Promise((done) => setTimeout(done, drainMs))
+    }
+    app.log.info('apagando: cierro el servidor')
+    // El techo cubre el cierre ENTERO, pools incluidos: una conexión que no termina
+    // nunca no puede dejarnos vivos hasta el KILL de los 30 s.
+    const closeEverything = async () => {
       await app.close()
       await Promise.all([pool.end(), healthPool.end()].map((p) => p.catch(() => {})))
-      process.exit(0)
-    })
+    }
+    await Promise.race([closeEverything(), new Promise((done) => setTimeout(done, 8_000))])
+    process.exit(0)
   }
+  process.on('SIGTERM', () => shutDown(DRAIN_MS))
+  process.on('SIGINT', () => shutDown(0))
 }

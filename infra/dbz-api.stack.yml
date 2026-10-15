@@ -76,6 +76,12 @@ services:
     # que resuelve host-gateway.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # 30 s de gracia al apagar (los 10 por defecto no alcanzan): al SIGTERM el servidor
+    # sigue sirviendo 18 s porque el Traefik del edge sondea el swarm cada 15 y mientras
+    # tanto le sigue mandando tráfico; recién después cierra (hasta 8 s más). Aplicado el
+    # 09-10 con `docker service update --stop-grace-period=30s dbz-api_api` — tocar este
+    # archivo solo no tiene efecto: el despliegue nunca re-aplica el stack.
+    stop_grace_period: 30s
 
     deploy:
       replicas: 1
