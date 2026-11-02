@@ -11,7 +11,7 @@ import {
   changePassword, revokeOtherSessions, resetPassword,
 } from './auth.js'
 import { validateProfile, readProfile, saveProfile } from './profile.js'
-import { readCollection, saveCard, replaceCollection, validateCard, validateReplacement, isValidCardKey } from './collection.js'
+import { readCollection, saveCard, saveCards, replaceCollection, validateCard, validateBatch, validateReplacement, isValidCardKey } from './collection.js'
 import { recordUserVisit, buildAdminSummary, parseCollections, readHealth, todayInArgentina } from './stats.js'
 import { recordPulse, recordVisit } from './pulse.js'
 import { createLimiter, WINDOW } from './limiter.js'
@@ -443,6 +443,15 @@ export function createApp(pool, healthPool = pool) {
 
     await saveCard(pool, request.user.id, cardKey, request.body.cantidad, request.body.estado)
     return reply.code(204).send()
+  })
+
+  /* Varias cartas juntas: la carga masiva del front. Una sola transacción, y sólo agrega o
+     cambia lo que llega (cantidad 0 saca la carta). NO borra lo que no viene: eso es el
+     reemplazo de abajo. Ver `validateBatch`. */
+  app.post('/api/cartas/lote', { preHandler: requireSession }, async (request, reply) => {
+    const validationError = validateBatch(request.body)
+    if (validationError) return reply.code(400).send({ error: validationError })
+    return await saveCards(pool, request.user.id, request.body.cartas)
   })
 
   // La colección entera. La usa "Restaurar una copia", no el uso diario.

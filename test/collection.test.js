@@ -7,7 +7,7 @@
 // «Listo: 0 cartas» — justo la herramienta que se usa para recuperar un respaldo.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeBackup, validateReplacement, MAX_REPLACE_KEYS, countLostCards } from '../src/collection.js'
+import { normalizeBackup, validateReplacement, MAX_REPLACE_KEYS, countLostCards, validateBatch, MAX_BATCH_KEYS } from '../src/collection.js'
 
 test('normalizeBackup rechaza lo que no es una copia', () => {
   // Cada uno de éstos se convertía antes en una colección vacía perfectamente válida.
@@ -141,4 +141,34 @@ test('sobrevive a que falten los mapas', () => {
   assert.equal(countLostCards(null, null), 0)
   assert.equal(countLostCards(undefined, { 'exp-1:1': 1 }), 0)
   assert.equal(countLostCards({ 'exp-1:1': 1 }, undefined), 1)
+})
+
+test('validateBatch: acepta un lote bien formado, con cantidad 0 incluida (es el «deshacer»)', () => {
+  assert.equal(validateBatch({ cartas: { 'exp-1:1': { cantidad: 1, estado: 'bien' }, 'exp-1:2': { cantidad: 0, estado: null } } }), null)
+})
+
+test('validateBatch: rechaza todo lo que no es un lote', () => {
+  for (const garbage of [null, undefined, 0, 'hola', [], {}, { cartas: null }, { cartas: [] }, { cartas: {} }, { cartas: 'x' }]) {
+    assert.notEqual(validateBatch(garbage), null, JSON.stringify(garbage))
+  }
+})
+
+test('validateBatch: mira cada carta, no sólo la forma de afuera', () => {
+  const lote = (cartas) => validateBatch({ cartas })
+  assert.match(lote({ '../etc:1': { cantidad: 1 } }), /no es válida/, 'clave rara')
+  assert.match(lote({ 'exp-1:1': { cantidad: -1 } }), /exp-1:1/, 'cantidad negativa, y dice cuál es')
+  assert.match(lote({ 'exp-1:1': { cantidad: 1.5 } }), /exp-1:1/, 'cantidad con decimales')
+  assert.match(lote({ 'exp-1:1': { cantidad: 1, estado: 'inventado' } }), /exp-1:1/, 'estado desconocido')
+  assert.match(lote({ 'exp-1:1': 'hola' }), /exp-1:1/, 'la carta no es un objeto')
+  // Una sola mala entre muchas buenas alcanza para rechazar el lote entero.
+  const mezcla = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`exp-1:${i + 1}`, { cantidad: 1, estado: 'bien' }]))
+  mezcla['exp-1:51'] = { cantidad: -5 }
+  assert.notEqual(validateBatch({ cartas: mezcla }), null)
+})
+
+test('validateBatch: tiene techo, y el techo alcanza para el álbum entero', () => {
+  const lote = (n) => ({ cartas: Object.fromEntries(Array.from({ length: n }, (_, i) => [`exp-1:${i + 1}`, { cantidad: 1, estado: 'bien' }])) })
+  assert.equal(validateBatch(lote(MAX_BATCH_KEYS)), null)
+  assert.match(validateBatch(lote(MAX_BATCH_KEYS + 1)), /demasiadas/)
+  assert.ok(MAX_BATCH_KEYS >= 1946, 'el álbum completo de Cromeros tiene que entrar en un lote')
 })

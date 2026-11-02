@@ -763,3 +763,91 @@ test('el reemplazo masivo también deja fecha', async () => {
   assert.equal(rows.length, 2)
   assert.ok(rows.every((f) => f.marked_at), 'las dos tienen que tener fecha')
 })
+
+test('lote: guarda varias cartas juntas, agrega sin borrar lo que no viene, y 0 saca la carta', async () => {
+  const token = await register('angel@ejemplo.com')
+  // Una que ya tenía, que el lote NO menciona: tiene que quedar intacta.
+  await request({ method: 'PUT', url: '/api/cartas/exp-9:900', headers: auth(token), payload: { cantidad: 2, estado: 'perfecta' } })
+
+  const lote = await request({
+    method: 'POST', url: '/api/cartas/lote', headers: auth(token),
+    payload: { cartas: {
+      'exp-1:1': { cantidad: 1, estado: 'bien' },
+      'exp-1:2': { cantidad: 1, estado: 'reemplazar' },
+      'exp-1:3': { cantidad: 1, estado: null },
+    } },
+  })
+  assert.equal(lote.statusCode, 200, lote.body)
+  assert.deepEqual(lote.json(), { guardadas: 3, sacadas: 0 })
+
+  let r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(r.json().cantidades, { 'exp-9:900': 2, 'exp-1:1': 1, 'exp-1:2': 1, 'exp-1:3': 1 })
+  assert.equal(r.json().estados['exp-9:900'], 'perfecta', 'la que no venía en el lote no se toca')
+  assert.equal(r.json().estados['exp-1:2'], 'reemplazar')
+  assert.equal(r.json().estados['exp-1:3'], undefined, 'sin estado no hay estado')
+
+  // El «deshacer» de la carga: cantidad 0 saca esas cartas y nada más.
+  const undo = await request({
+    method: 'POST', url: '/api/cartas/lote', headers: auth(token),
+    payload: { cartas: { 'exp-1:1': { cantidad: 0 }, 'exp-1:2': { cantidad: 0 }, 'exp-1:3': { cantidad: 0 } } },
+  })
+  assert.deepEqual(undo.json(), { guardadas: 0, sacadas: 3 })
+  r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(r.json(), { estados: { 'exp-9:900': 'perfecta' }, cantidades: { 'exp-9:900': 2 } })
+})
+
+test('lote: cambia la carta que ya existía en vez de duplicarla', async () => {
+  const token = await register('angel@ejemplo.com')
+  await request({ method: 'PUT', url: '/api/cartas/exp-1:5', headers: auth(token), payload: { cantidad: 1, estado: 'bien' } })
+  await request({ method: 'POST', url: '/api/cartas/lote', headers: auth(token), payload: { cartas: { 'exp-1:5': { cantidad: 4, estado: 'perfecta' } } } })
+  const r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(r.json(), { estados: { 'exp-1:5': 'perfecta' }, cantidades: { 'exp-1:5': 4 } })
+})
+
+test('lote: con la misma clave, el de uno no toca la colección del otro', async () => {
+  const angel = await register('angel@ejemplo.com')
+  const goku = await register('goku@ejemplo.com')
+  await request({ method: 'PUT', url: '/api/cartas/exp-1:1', headers: auth(angel), payload: { cantidad: 3, estado: 'perfecta' } })
+  // Goku manda un lote con la misma clave, y otro que la saca: la de Angel no se entera.
+  await request({ method: 'POST', url: '/api/cartas/lote', headers: auth(goku), payload: { cartas: { 'exp-1:1': { cantidad: 1, estado: 'bien' } } } })
+  await request({ method: 'POST', url: '/api/cartas/lote', headers: auth(goku), payload: { cartas: { 'exp-1:1': { cantidad: 0 } } } })
+  const r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(angel) })
+  assert.deepEqual(r.json().cantidades, { 'exp-1:1': 3 })
+  // Y ni siquiera un cuerpo con un usuario ajeno cambia de quién es: sale del token.
+  const sneaky = await request({
+    method: 'POST', url: '/api/cartas/lote', headers: auth(goku),
+    payload: { usuario: 'angel@ejemplo.com', usuario_id: 1, cartas: { 'exp-1:7': { cantidad: 1 } } },
+  })
+  assert.equal(sneaky.statusCode, 200)
+  const own = await request({ method: 'GET', url: '/api/coleccion', headers: auth(angel) })
+  assert.equal(own.json().cantidades['exp-1:7'], undefined)
+})
+
+test('lote: pide sesión, rechaza basura con 400 y una carta mala no deja entrar a las buenas', async () => {
+  const noSession = await request({ method: 'POST', url: '/api/cartas/lote', payload: { cartas: { 'exp-1:1': { cantidad: 1 } } } })
+  assert.equal(noSession.statusCode, 401)
+
+  const token = await register('angel@ejemplo.com')
+  for (const payload of [{}, { cartas: {} }, { cartas: [] }, { cartas: { '../x:1': { cantidad: 1 } } }]) {
+    const r = await request({ method: 'POST', url: '/api/cartas/lote', headers: auth(token), payload })
+    assert.equal(r.statusCode, 400, JSON.stringify(payload))
+  }
+  // Una mala entre buenas: entra todo o no entra nada.
+  const mixed = await request({
+    method: 'POST', url: '/api/cartas/lote', headers: auth(token),
+    payload: { cartas: { 'exp-1:1': { cantidad: 1, estado: 'bien' }, 'exp-1:2': { cantidad: 1, estado: 'inventado' } } },
+  })
+  assert.equal(mixed.statusCode, 400)
+  const r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.deepEqual(r.json(), { estados: {}, cantidades: {} })
+})
+
+test('lote: el álbum entero entra de una vez', async () => {
+  const token = await register('angel@ejemplo.com')
+  const cartas = Object.fromEntries(Array.from({ length: 1946 }, (_, i) => [`exp-${(i % 9) + 1}:${i + 1}`, { cantidad: 1, estado: 'bien' }]))
+  const lote = await request({ method: 'POST', url: '/api/cartas/lote', headers: auth(token), payload: { cartas } })
+  assert.equal(lote.statusCode, 200, lote.body)
+  assert.deepEqual(lote.json(), { guardadas: 1946, sacadas: 0 })
+  const r = await request({ method: 'GET', url: '/api/coleccion', headers: auth(token) })
+  assert.equal(Object.keys(r.json().cantidades).length, 1946)
+})

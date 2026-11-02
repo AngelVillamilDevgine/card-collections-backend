@@ -92,6 +92,67 @@ export function validateCard(body) {
    once caracteres, así que sobra. */
 export const isValidCardKey = (cardKey) => /^[a-z0-9-]{1,34}:\d{1,5}$/.test(cardKey)
 
+/* UN LOTE DE CARTAS: varias cartas en un solo pedido y una sola transacción. Lo usa la carga
+   masiva del front («Marcar toda una expansión»), que puede mover cientos de cartas juntas.
+
+   Mandarlas de a una por el camino de cada toque eran hasta 1946 pedidos casi simultáneos: se
+   topan con el límite de pedidos en vuelo del navegador, y si alguno falla queda una carga a
+   medias que la persona no puede ver. Acá entra todo o no entra nada.
+
+   NO ES EL REEMPLAZO. `PUT /api/coleccion` borra lo que no viene; esto sólo AGREGA o CAMBIA
+   las cartas que llegan, y una cantidad 0 saca esa carta, igual que en el toque suelto (así
+   funciona el «Deshacer» de la carga). Nada de lo que no viene en el lote se toca, y por eso no
+   necesita las tres guardas del reemplazo. El `usuario_id` sale del token, como siempre. */
+export const MAX_BATCH_KEYS = 3000
+
+export function validateBatch(body) {
+  const cards = body?.cartas
+  if (!cards || typeof cards !== 'object' || Array.isArray(cards)) return 'Faltan las cartas a guardar.'
+  const keys = Object.keys(cards)
+  if (!keys.length) return 'No hay ninguna carta para guardar.'
+  if (keys.length > MAX_BATCH_KEYS) return `Son demasiadas cartas de una vez (el máximo es ${MAX_BATCH_KEYS}).`
+  // Una por una, como el toque suelto: que el pedido sea de a bloques no lo exime de mirar lo que llega.
+  for (const key of keys) {
+    if (!isValidCardKey(key)) return `La clave «${key.slice(0, 40)}» no es válida.`
+    const error = validateCard(cards[key])
+    if (error) return `${key}: ${error}`
+  }
+  return null
+}
+
+export async function saveCards(pool, userId, cards) {
+  const entries = Object.entries(cards)
+  const toRemove = entries.filter(([, v]) => !(v.cantidad > 0)).map(([key]) => key)
+  const toSave = entries
+    .filter(([, v]) => v.cantidad > 0)
+    .map(([key, v]) => [userId, key, v.cantidad, CONDITIONS.has(v.estado) ? v.estado : null])
+
+  const connection = await pool.getConnection()
+  try {
+    await connection.beginTransaction()
+    // De a mil por vez, por lo mismo que el reemplazo: un INSERT enorme se pasa de max_allowed_packet.
+    for (let i = 0; i < toSave.length; i += 1000) {
+      await connection.query(
+        `INSERT INTO carta (usuario_id, clave, cantidad, estado) VALUES ?
+         ON DUPLICATE KEY UPDATE cantidad = VALUES(cantidad), estado = VALUES(estado)`,
+        [toSave.slice(i, i + 1000)]
+      )
+    }
+    for (let i = 0; i < toRemove.length; i += 1000) {
+      await connection.query(
+        'DELETE FROM carta WHERE usuario_id = ? AND clave IN (?)', [userId, toRemove.slice(i, i + 1000)]
+      )
+    }
+    await connection.commit()
+  } catch (e) {
+    await connection.rollback()
+    throw e
+  } finally {
+    connection.release()
+  }
+  return { guardadas: toSave.length, sacadas: toRemove.length }
+}
+
 /* Tope de filas de un reemplazo. Con el `bodyLimit` de 2 MB entran más de 139.000 claves
    de formato válido en un solo pedido, y sin techo una cuenta gratuita —el registro es
    abierto— podía dejar millones de filas en el MySQL que comparten los clientes.
