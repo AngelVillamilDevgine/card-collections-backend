@@ -299,7 +299,7 @@ test('las claves que mandan la landing y el formulario están TODAS en la lista 
   /* El contrato entre repos no se puede importar: el front manda estos literales
      (`early.js` y `Login.jsx`) y acá tienen que existir, o el contador pierde en
      silencio. Si se agrega un botón allá, se agrega su clave acá y en esta lista. */
-  for (const k of ['landing', 'login:hero', 'login:closing', 'login:hero-acct', 'login:closing-acct', 'login:direct']) {
+  for (const k of ['landing', 'login:hero', 'login:closing', 'login:hero-acct', 'login:closing-acct', 'login:direct', 'login:typed', 'login:error']) {
     assert.ok(PULSE_KEYS.has(k), `falta ${k} en PULSE_KEYS`)
   }
 })

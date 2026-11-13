@@ -28,6 +28,12 @@ export const PULSE_KEYS = new Set([
   'login:hero-acct',
   'login:closing-acct',
   'login:direct',
+  /* Dentro del formulario de alta (los manda Login.jsx): `typed` la primera vez que la
+     persona escribe algo, `error` cuando el alta le contesta que no. No entran en
+     `toSignup` ni `toLogin`: son para mirar dónde se cae, y se leen de `visitor_click`
+     (por persona) o de `pulse` (por carga). */
+  'login:typed',
+  'login:error',
 ])
 
 /* EL VISITANTE ÚNICO. El cuerpo del beacon de la landing es `v1|<vid>|<sesion>|<app>`:
